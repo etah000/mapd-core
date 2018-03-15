@@ -260,7 +260,7 @@ public class MapDPlanner implements Planner {
     final SqlToRelConverter.Config config = SqlToRelConverter.configBuilder()
         .withConfig(sqlToRelConverterConfig)
         //MAT custom code mods to stop expansion and allow for any number IN
-        .withExpand(false)
+        .withExpand(true)
         .withInSubQueryThreshold(Integer.MAX_VALUE)
         //
         .withTrimUnusedFields(false)
