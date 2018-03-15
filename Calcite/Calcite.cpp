@@ -55,6 +55,7 @@ void start_calcite_server_as_daemon(const int mapd_port,
 
   int pid = fork();
   if (pid == 0) {
+      /*
     int i = execl("/usr/bin/java",
                   xmxP.c_str(),
                   jarP.c_str(),
@@ -68,6 +69,12 @@ void start_calcite_server_as_daemon(const int mapd_port,
                   mapdPortP.c_str(),
                   mapdPortD.c_str(),
                   (char*)0);
+    */
+      
+      std::string cmd_str= "/usr/bin/java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005 "
+             + xmxP + " " +  jarP + " " + jarD + " " +  extensionsP + " " + extensionsD + " "
+             + dataP + " " +  dataD + " " + localPortP + " " + localPortD + " " + mapdPortP + " " + mapdPortD;
+      int i = system(cmd_str.c_str());
     LOG(INFO) << " Calcite server running after exe, return " << i;
   }
 }
