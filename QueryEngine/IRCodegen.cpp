@@ -148,6 +148,8 @@ llvm::Value* Executor::codegen(const Analyzer::UOper* u_oper, const CompilationO
       return codegenUMinus(u_oper, co);
     case kISNULL:
       return codegenIsNull(u_oper, co);
+    case kISTRUE:
+      return codegenIsTrue(u_oper, co);
     case kUNNEST:
       return codegenUnnest(u_oper, co);
     default:

@@ -519,6 +519,7 @@ class Executor {
                                        llvm::Value* rhs_lv,
                                        llvm::BasicBlock* no_overflow_bb,
                                        const SQLTypeInfo& ti);
+  llvm::Value* codegenIsTrue(const Analyzer::UOper*, const CompilationOptions&);
   llvm::Value* codegenIsNull(const Analyzer::UOper*, const CompilationOptions&);
   llvm::Value* codegenIsNullNumber(llvm::Value*, const SQLTypeInfo&);
   llvm::Value* codegenUnnest(const Analyzer::UOper*, const CompilationOptions&);

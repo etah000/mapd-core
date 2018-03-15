@@ -313,7 +313,7 @@ class Constant : public Expr {
 /*
  * @type UOper
  * @brief represents unary operator expressions.  operator types include
- * kUMINUS, kISNULL, kEXISTS, kCAST
+ * kUMINUS, kISNULL, kEXISTS, kCAST, kISTRUE
  */
 class UOper : public Expr {
  public:

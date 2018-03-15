@@ -1796,6 +1796,9 @@ void UOper::print() const {
     case kISNULL:
       op = "IS NULL ";
       break;
+    case kISTRUE:
+      op = "IS TRUE ";
+      break;
     case kEXISTS:
       op = "EXISTS ";
       break;

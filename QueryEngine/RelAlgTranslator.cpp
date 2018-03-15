@@ -336,6 +336,7 @@ std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateUoper(const RexOperat
       return std::make_shared<Analyzer::UOper>(target_ti, false, sql_op, operand_expr);
     }
     case kNOT:
+    case kISTRUE: 
     case kISNULL: {
       return std::make_shared<Analyzer::UOper>(kBOOLEAN, sql_op, operand_expr);
     }

@@ -50,7 +50,8 @@ enum SQLOps {
   kARRAY_AT,
   kUNNEST,
   kFUNCTION,
-  kIN
+  kIN,
+  kISTRUE
 };
 
 #define IS_COMPARISON(X) \

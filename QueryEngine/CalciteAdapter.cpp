@@ -253,7 +253,8 @@ class CalciteAdapter {
         return makeExpr<Analyzer::UOper>(target_ti, false, sql_op, operand_expr);
       }
       case kNOT:
-      case kISNULL: {
+      case kISNULL: 
+      case kISTRUE: {
         return makeExpr<Analyzer::UOper>(kBOOLEAN, sql_op, operand_expr);
       }
       case kISNOTNULL: {
