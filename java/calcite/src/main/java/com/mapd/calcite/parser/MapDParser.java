@@ -15,12 +15,16 @@
  */
 package com.mapd.calcite.parser;
 
+import com.mapd.calcite.planner.PushupJoinFilterRule;
 import com.mapd.parser.server.ExtensionFunction;
 import java.util.Map;
 import org.apache.calcite.avatica.util.Casing;
+import org.apache.calcite.plan.RelOptRule;
+import org.apache.calcite.plan.RelOptRuleOperandChildren;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
+import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.sql.SqlAsOperator;
@@ -42,11 +46,7 @@ import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.prepare.MapDPlanner;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.type.SqlTypeUtil;
-import org.apache.calcite.tools.FrameworkConfig;
-import org.apache.calcite.tools.Frameworks;
-import org.apache.calcite.tools.Planner;
-import org.apache.calcite.tools.RelConversionException;
-import org.apache.calcite.tools.ValidationException;
+import org.apache.calcite.tools.*;
 import org.apache.calcite.util.ConversionUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -90,6 +90,7 @@ public final class MapDParser {
                     .setCaseSensitive(false)
                     .build())
             .build();
+
     return new MapDPlanner(config);
   }
 
@@ -160,6 +161,9 @@ public final class MapDParser {
     }
 
     RelRoot relR = planner.rel(validateR);
+
+    //relR = relR.withRel(planner.transform(0, planner.getEmptyTraitSet(), relR.rel));
+
     planner.close();
     return relR;
   }
