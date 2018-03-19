@@ -31,6 +31,7 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.metadata.CachingRelMetadataProvider;
+import org.apache.calcite.rel.rules.ProjectMergeRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexExecutor;
@@ -272,8 +273,8 @@ public class MapDPlanner implements Planner {
 
   private RelNode removeJoinFilter(RelNode rootRel) {
     HepProgram program = HepProgram.builder()
-            .addRuleInstance(new PushupJoinFilterRule(
-                    RelOptRule.operand(LogicalJoin.class, RelOptRule.any())))
+            .addRuleInstance(new PushupJoinFilterRule(RelOptRule.operand(LogicalJoin.class, RelOptRule.any())))
+            .addRuleInstance(ProjectMergeRule.INSTANCE)
             .build();
     final RelOptCluster cluster = rootRel.getCluster();
     HepPlanner planner = new HepPlanner(
