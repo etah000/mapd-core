@@ -926,6 +926,16 @@ std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateLength(const RexFunct
                                             rex_function->getName() == std::string("CHAR_LENGTH"));
 }
 
+std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateSubstring(const RexFunctionOperator* rex_function) const {
+  CHECK_EQ(size_t(3), rex_function->size());
+  const auto str_arg = translateScalarRex(rex_function->getOperand(0));
+  const auto from = translateScalarRex(rex_function->getOperand(1));
+  const auto to = translateScalarRex(rex_function->getOperand(2));
+  return makeExpr<Analyzer::SubstringExpr>(str_arg->decompress(), from, to);
+}
+
+
+
 std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateItem(const RexFunctionOperator* rex_function) const {
   CHECK_EQ(size_t(2), rex_function->size());
   const auto base = translateScalarRex(rex_function->getOperand(0));
@@ -1009,6 +1019,9 @@ std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateFunction(const RexFun
   }
   if (rex_function->getName() == std::string("LENGTH") || rex_function->getName() == std::string("CHAR_LENGTH")) {
     return translateLength(rex_function);
+  }
+  if (rex_function->getName() == std::string("SUBSTRING")) {
+    return translateSubstring(rex_function);
   }
   if (rex_function->getName() == std::string("ITEM")) {
     return translateItem(rex_function);

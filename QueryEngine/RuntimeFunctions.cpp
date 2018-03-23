@@ -875,6 +875,28 @@ extern "C" ALWAYS_INLINE uint64_t string_pack(const int8_t* ptr, const int32_t l
 #include "TopKRuntime.cpp"
 #endif
 
+extern "C" NEVER_INLINE DEVICE uint64_t subtring_nullable(
+                                                        const char* str,
+                                                        const int32_t str_len,
+                                                        const int32_t from, 
+                                                        const int32_t to)  {  // index in SQL substring begins from 0
+  if (!str) {
+    return int64_t(0);
+  }
+  
+  int32_t substr_len;
+  int8_t* ptr = reinterpret_cast<int8_t*>(const_cast<char*>(str));
+  if (from > str_len) {
+      substr_len = 0;
+  } 
+  else  {
+      ptr += (from -1);
+      substr_len = to -1 > str_len ? str_len - from + 1 : to - from;
+  }
+  
+  return string_pack(ptr, substr_len);
+}
+
 extern "C" ALWAYS_INLINE DEVICE int32_t char_length(const char* str, const int32_t str_len) {
   return str_len;
 }

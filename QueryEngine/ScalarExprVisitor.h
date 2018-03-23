@@ -223,6 +223,14 @@ class ScalarExprVisitor {
     result = aggregateResult(result, visit(dateadd->get_datetime_expr()));
     return result;
   }
+  
+   virtual T visitSubstringExpr(const Analyzer::SubstringExpr* substring) const {
+    T result = defaultResult();
+    result = aggregateResult(result, visit(substring->get_str()));
+    result = aggregateResult(result, visit(substring->get_from_expr()));
+    result = aggregateResult(result, visit(substring->get_to_expr()));
+    return result;
+  }
 
   virtual T visitLikelihood(const Analyzer::LikelihoodExpr* likelihood) const { return visit(likelihood->get_arg()); }
 

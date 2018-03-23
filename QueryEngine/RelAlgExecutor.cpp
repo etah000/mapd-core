@@ -921,7 +921,10 @@ std::vector<std::shared_ptr<Analyzer::Expr>> translate_scalar_sources(const RA* 
     }
     const auto scalar_expr = translator.translateScalarRex(scalar_rex);
     const auto folded_scalar_expr = fold_expr(scalar_expr.get());
-    scalar_sources.push_back(folded_scalar_expr);
+    if (folded_scalar_expr == nullptr)
+    	scalar_sources.push_back(scalar_expr);
+    else
+    	scalar_sources.push_back(folded_scalar_expr);
   }
   return scalar_sources;
 }

@@ -8,62 +8,62 @@ PREFIX=/usr/local/mapd-deps
 SCRIPTS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source $SCRIPTS_DIR/common-functions.sh
 
-sudo mkdir -p $PREFIX
-sudo chown -R $(id -u) $PREFIX
+# sudo mkdir -p $PREFIX
+# sudo chown -R $(id -u) $PREFIX
 
-sudo apt update
-sudo apt install -y \
-    build-essential \
-    ccache \
-    cmake \
-    cmake-curses-gui \
-    git \
-    wget \
-    curl \
-    clang \
-    llvm \
-    llvm-dev \
-    clang-format \
-    gcc-5 \
-    g++-5 \
-    libboost-all-dev \
-    libgoogle-glog-dev \
-    golang \
-    libssl-dev \
-    libevent-dev \
-    default-jre \
-    default-jre-headless \
-    default-jdk \
-    default-jdk-headless \
-    maven \
-    libncurses5-dev \
-    libldap2-dev \
-    binutils-dev \
-    google-perftools \
-    libdouble-conversion-dev \
-    libevent-dev \
-    libgdal-dev \
-    libgflags-dev \
-    libgoogle-perftools-dev \
-    libiberty-dev \
-    libjemalloc-dev \
-    libglu1-mesa-dev \
-    liblz4-dev \
-    liblzma-dev \
-    libbz2-dev \
-    libarchive-dev \
-    libcurl4-openssl-dev \
-    uuid-dev \
-    libsnappy-dev \
-    zlib1g-dev \
-    autoconf \
-    autoconf-archive \
-    automake \
-    bison \
-    flex-old
+# sudo apt update
+# sudo apt install -y \
+#     build-essential \
+#     ccache \
+#     cmake \
+#     cmake-curses-gui \
+#     git \
+#     wget \
+#     curl \
+#     clang \
+#     llvm \
+#     llvm-dev \
+#     clang-format \
+#     gcc-5 \
+#     g++-5 \
+#     libboost-all-dev \
+#     libgoogle-glog-dev \
+#     golang \
+#     libssl-dev \
+#     libevent-dev \
+#     default-jre \
+#     default-jre-headless \
+#     default-jdk \
+#     default-jdk-headless \
+#     maven \
+#     libncurses5-dev \
+#     libldap2-dev \
+#     binutils-dev \
+#     google-perftools \
+#     libdouble-conversion-dev \
+#     libevent-dev \
+#     libgdal-dev \
+#     libgflags-dev \
+#     libgoogle-perftools-dev \
+#     libiberty-dev \
+#     libjemalloc-dev \
+#     libglu1-mesa-dev \
+#     liblz4-dev \
+#     liblzma-dev \
+#     libbz2-dev \
+#     libarchive-dev \
+#     libcurl4-openssl-dev \
+#     uuid-dev \
+#     libsnappy-dev \
+#     zlib1g-dev \
+#     autoconf \
+#     autoconf-archive \
+#     automake \
+#     bison \
+#     flex-old
 
 # install AWS core and s3 sdk
-install_awscpp -j $(nproc)
+# install_awscpp -j $(nproc)
 
 VERS=0.10.0
 wget --continue http://apache.claz.org/thrift/$VERS/thrift-$VERS.tar.gz
@@ -121,8 +121,8 @@ make install
 popd
 
 # Apache Arrow (see common-functions.sh)
-ARROW_BOOST_USE_SHARED="ON"
-install_arrow
+# ARROW_BOOST_USE_SHARED="ON"
+# install_arrow
 
 VERS=2.1.4_egl
 wget --continue https://github.com/vastcharade/glbinding/archive/v$VERS.tar.gz
