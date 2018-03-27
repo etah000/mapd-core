@@ -64,6 +64,10 @@ class ScalarExprVisitor {
     if (char_length) {
       return visitCharLength(char_length);
     }
+    const auto substring = dynamic_cast<const Analyzer::SubstringExpr*>(expr);
+        if (substring) {
+          return visitSubstringExpr(substring);
+    }
     const auto like_expr = dynamic_cast<const Analyzer::LikeExpr*>(expr);
     if (like_expr) {
       return visitLikeExpr(like_expr);
