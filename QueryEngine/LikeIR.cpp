@@ -90,7 +90,7 @@ llvm::Value* Executor::codegen(const Analyzer::SubstringExpr* expr, const Compil
   
   auto from = codegen(expr->get_from_expr(), true, co).front();
   CHECK(from->getType()->isIntegerTy());
-  auto to = codegen(expr->get_to_expr(), true, co).front();
+  auto to = codegen(expr->get_len_expr(), true, co).front();
   CHECK(to->getType()->isIntegerTy());
    
   std::vector<llvm::Value*> substring_args{str_lv[1], str_lv[2], from, to};

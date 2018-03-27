@@ -32,6 +32,7 @@
 #include <thread>
 #include <chrono>
 
+
 // decoder implementations
 
 #include "DecodersImpl.h"
@@ -879,10 +880,11 @@ extern "C" NEVER_INLINE DEVICE uint64_t subtring_nullable(
                                                         const char* str,
                                                         const int32_t str_len,
                                                         const int32_t from, 
-                                                        const int32_t to)  {  // index in SQL substring begins from 0
+                                                        const int32_t len)  {  // index in SQL substring begins from 0
   if (!str) {
     return int64_t(0);
   }
+  printf("*******************: %s, len: %d, from: %d, to: %d\n", str, str_len, from, len);
   
   int32_t substr_len;
   int8_t* ptr = reinterpret_cast<int8_t*>(const_cast<char*>(str));
@@ -891,7 +893,7 @@ extern "C" NEVER_INLINE DEVICE uint64_t subtring_nullable(
   } 
   else  {
       ptr += (from -1);
-      substr_len = to -1 > str_len ? str_len - from + 1 : to - from;
+      substr_len = len > str_len - from + 1 ? str_len - from + 1 : len;
   }
   
   return string_pack(ptr, substr_len);

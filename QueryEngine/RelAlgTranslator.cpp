@@ -929,9 +929,9 @@ std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateLength(const RexFunct
 std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateSubstring(const RexFunctionOperator* rex_function) const {
   CHECK_EQ(size_t(3), rex_function->size());
   const auto str_arg = translateScalarRex(rex_function->getOperand(0));
-  const auto from = translateScalarRex(rex_function->getOperand(1));
-  const auto to = translateScalarRex(rex_function->getOperand(2));
-  return makeExpr<Analyzer::SubstringExpr>(str_arg->decompress(), from, to);
+  const auto from = translateScalarRex(rex_function->getOperand(1)); // @suppress("Invalid arguments")
+  const auto len = translateScalarRex(rex_function->getOperand(2));
+  return makeExpr<Analyzer::SubstringExpr>(str_arg->decompress(), from, len);
 }
 
 

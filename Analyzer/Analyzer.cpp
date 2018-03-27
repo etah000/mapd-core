@@ -151,7 +151,7 @@ std::shared_ptr<Analyzer::Expr> DatediffExpr::deep_copy() const {
 }
 
 std::shared_ptr<Analyzer::Expr> SubstringExpr::deep_copy() const {
-  return makeExpr<SubstringExpr>(str_->deep_copy(), from_->deep_copy(), to_->deep_copy());
+  return makeExpr<SubstringExpr>(str_->deep_copy(), beginIndex_->deep_copy(), len_->deep_copy());
 }
 
 std::shared_ptr<Analyzer::Expr> DatetruncExpr::deep_copy() const {
@@ -1490,7 +1490,7 @@ std::shared_ptr<Analyzer::Expr> DatediffExpr::rewrite_with_targetlist(
 std::shared_ptr<Analyzer::Expr> SubstringExpr::rewrite_with_targetlist(
     const std::vector<std::shared_ptr<TargetEntry>>& tlist) const {
   return makeExpr<SubstringExpr>(str_->rewrite_with_targetlist(tlist), 
-          from_->rewrite_with_targetlist(tlist), to_->rewrite_with_targetlist(tlist));
+          beginIndex_->rewrite_with_targetlist(tlist), len_->rewrite_with_targetlist(tlist));
 }
 
 std::shared_ptr<Analyzer::Expr> DatetruncExpr::rewrite_with_targetlist(
@@ -1525,7 +1525,7 @@ std::shared_ptr<Analyzer::Expr> DateaddExpr::rewrite_with_child_targetlist(
 std::shared_ptr<Analyzer::Expr> SubstringExpr::rewrite_with_child_targetlist(
     const std::vector<std::shared_ptr<TargetEntry>>& tlist) const {
   return makeExpr<SubstringExpr>(str_->rewrite_with_child_targetlist(tlist),
-          from_->rewrite_with_child_targetlist(tlist), to_->rewrite_with_child_targetlist(tlist));
+          beginIndex_->rewrite_with_child_targetlist(tlist), len_->rewrite_with_child_targetlist(tlist));
 }
 
 std::shared_ptr<Analyzer::Expr> DatediffExpr::rewrite_with_child_targetlist(
@@ -1567,8 +1567,8 @@ std::shared_ptr<Analyzer::Expr> DatediffExpr::rewrite_agg_to_var(
 
 std::shared_ptr<Analyzer::Expr> SubstringExpr::rewrite_agg_to_var(
     const std::vector<std::shared_ptr<TargetEntry>>& tlist) const {
-  return makeExpr<SubstringExpr>(str_->rewrite_agg_to_var(tlist), from_->rewrite_agg_to_var(tlist), 
-          to_->rewrite_agg_to_var(tlist));
+  return makeExpr<SubstringExpr>(str_->rewrite_agg_to_var(tlist), beginIndex_->rewrite_agg_to_var(tlist), 
+          len_->rewrite_agg_to_var(tlist));
 }
 
 std::shared_ptr<Analyzer::Expr> DatetruncExpr::rewrite_agg_to_var(
@@ -1783,7 +1783,7 @@ bool SubstringExpr::operator==(const Expr& rhs) const {
   if (typeid(rhs) != typeid(SubstringExpr))
     return false;
   const SubstringExpr& rhs_ee = dynamic_cast<const SubstringExpr&>(rhs);
-  return *str_ == *rhs_ee.get_str() &&  *from_ == *rhs_ee.get_from_expr() && *to_ == *rhs_ee.get_to_expr();
+  return *str_ == *rhs_ee.get_str() &&  *beginIndex_ == *rhs_ee.get_from_expr() && *len_ == *rhs_ee.get_len_expr();
 }
 
 bool DatetruncExpr::operator==(const Expr& rhs) const {
@@ -2065,9 +2065,9 @@ void SubstringExpr::print() const {
   std::cout << "STR ";
   str_->print();
   std::cout << " FROM ";
-  from_->print();
+  beginIndex_->print();
   std::cout << " TO ";
-  to_->print();
+  len_->print();
   std::cout << ") ";
 }
 
@@ -2226,8 +2226,8 @@ void SubstringExpr::find_expr(bool (*f)(const Expr*), std::list<const Expr*>& ex
     add_unique(expr_list);
     return;
   }
-  from_->find_expr(f, expr_list);
-  to_->find_expr(f, expr_list);
+  beginIndex_->find_expr(f, expr_list);
+  len_->find_expr(f, expr_list);
 }
 
 

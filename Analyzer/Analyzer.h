@@ -678,12 +678,12 @@ class SubstringExpr : public Expr {
  public:
   SubstringExpr(std::shared_ptr<Analyzer::Expr> str,
            std::shared_ptr<Analyzer::Expr> from,
-           std::shared_ptr<Analyzer::Expr> to)
-      : Expr(kVARCHAR, false), str_(str), from_(from), to_(to) {}
+           std::shared_ptr<Analyzer::Expr> len)
+      : Expr(kVARCHAR, false), str_(str), beginIndex_(from), len_(len) {}
     
   const Expr* get_str() const { return str_.get(); }
-  const Expr* get_from_expr() const { return from_.get(); }
-  const Expr* get_to_expr() const { return to_.get(); }
+  const Expr* get_from_expr() const { return beginIndex_.get(); }
+  const Expr* get_len_expr() const { return len_.get(); }
   
   virtual std::shared_ptr<Analyzer::Expr> deep_copy() const;
   virtual void group_predicates(std::list<const Expr*>& scan_predicates,
@@ -704,8 +704,8 @@ class SubstringExpr : public Expr {
 
  private:
   std::shared_ptr<Analyzer::Expr> str_;      
-  std::shared_ptr<Analyzer::Expr> from_;    
-  std::shared_ptr<Analyzer::Expr> to_;  
+  std::shared_ptr<Analyzer::Expr> beginIndex_;    
+  std::shared_ptr<Analyzer::Expr> len_;  
 };
 
 /*

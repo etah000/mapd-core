@@ -211,7 +211,7 @@ class DeepCopyVisitor : public ScalarExprVisitor<std::shared_ptr<Analyzer::Expr>
   RetType visitSubstringExpr(const Analyzer::SubstringExpr* substring) const override {
     return makeExpr<Analyzer::SubstringExpr>(visit(substring->get_str()),
                                            visit(substring->get_from_expr()),
-                                           visit(substring->get_to_expr()));
+                                           visit(substring->get_len_expr()));
   }
 
   RetType visitFunctionOperWithCustomTypeHandling(

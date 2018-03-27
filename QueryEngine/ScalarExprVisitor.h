@@ -232,7 +232,7 @@ class ScalarExprVisitor {
     T result = defaultResult();
     result = aggregateResult(result, visit(substring->get_str()));
     result = aggregateResult(result, visit(substring->get_from_expr()));
-    result = aggregateResult(result, visit(substring->get_to_expr()));
+    result = aggregateResult(result, visit(substring->get_len_expr()));
     return result;
   }
 
