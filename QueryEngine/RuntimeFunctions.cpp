@@ -879,12 +879,26 @@ extern "C" ALWAYS_INLINE uint64_t string_pack(const int8_t* ptr, const int32_t l
 extern "C" NEVER_INLINE DEVICE uint64_t subtring_nullable(
                                                         const char* str,
                                                         const int32_t str_len,
-                                                        const int32_t from, 
-                                                        const int32_t len)  {  // index in SQL substring begins from 0
+                                                        const int16_t from, 
+                                                        const int16_t len)  {  // index in SQL substring begins from 0
   if (!str) {
     return int64_t(0);
   }
-  printf("*******************: %s, len: %d, from: %d, to: %d\n", str, str_len, from, len);
+  
+  /*
+  char buf[32];
+  int cpylen = 0;
+  if (str_len>31) {
+      cpylen = 31;     
+  } 
+  else {
+      cpylen = str_len;
+  }
+  strncpy(buf, const_cast<char*>(str), cpylen);
+  buf[cpylen+1] = '\0';
+  
+  printf("*******************: %s, len: %d, from: %d, to: %d\n", buf, str_len, from, len);
+  */
   
   int32_t substr_len;
   int8_t* ptr = reinterpret_cast<int8_t*>(const_cast<char*>(str));

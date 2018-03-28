@@ -90,13 +90,13 @@ llvm::Value* Executor::codegen(const Analyzer::SubstringExpr* expr, const Compil
   
   auto from = codegen(expr->get_from_expr(), true, co).front();
   CHECK(from->getType()->isIntegerTy());
-  auto to = codegen(expr->get_len_expr(), true, co).front();
-  CHECK(to->getType()->isIntegerTy());
+  auto len = codegen(expr->get_len_expr(), true, co).front();
+  CHECK(len->getType()->isIntegerTy());
    
-  std::vector<llvm::Value*> substring_args{str_lv[1], str_lv[2], from, to};
+  std::vector<llvm::Value*> substring_args{str_lv[1], str_lv[2], from, len};
   std::string substring_fname{"subtring_nullable"};
   
-  return cgen_state_->emitExternalCall(substring_fname, get_int_type(64, cgen_state_->context_), substring_args);
+  return cgen_state_->emitCall(substring_fname, substring_args);
 }
 
 llvm::Value* Executor::codegen(const Analyzer::LikeExpr* expr, const CompilationOptions& co) {

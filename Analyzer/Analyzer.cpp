@@ -2066,7 +2066,7 @@ void SubstringExpr::print() const {
   str_->print();
   std::cout << " FROM ";
   beginIndex_->print();
-  std::cout << " TO ";
+  std::cout << " FOR ";
   len_->print();
   std::cout << ") ";
 }
