@@ -1427,6 +1427,10 @@ class RelAlgAbstractInterpreter {
     eliminate_identical_copy(nodes_);
     fold_filters(nodes_);
     std::vector<const RelAlgNode*> left_deep_joins;
+    
+    std::cout<< "(1)-----------" <<std::endl;
+    std::cout<< tree_string(nodes_.back().get(), 4) << std::endl;
+    
     for (const auto& node : nodes_) {
       const auto left_deep_join_root = get_left_deep_join_root(node);
       // The filter which starts a left-deep join pattern must not be coalesced
@@ -1440,8 +1444,17 @@ class RelAlgAbstractInterpreter {
     }
     eliminate_dead_columns(nodes_);
     coalesce_nodes(nodes_, left_deep_joins);
+       
+    std::cout<< "(2)-----------" <<std::endl;
+    std::cout<< tree_string(nodes_.back().get(), 4) << std::endl;
+    
+    
     CHECK(nodes_.back().unique());
     create_left_deep_join(nodes_);
+    
+    std::cout<< "(3)-----------" <<std::endl;
+    std::cout<< tree_string(nodes_.back().get(), 4) << std::endl;
+    
     return nodes_.back();
   }
 

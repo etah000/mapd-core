@@ -429,8 +429,6 @@ void RelAlgExecutor::executeRelAlgStep(const size_t i,
   auto& exec_desc = exec_descs[i];
   const auto body = exec_desc.getBody();
   
-  std::cout<< "-----------" << tree_string(body, 4) << std::endl;
-  
   if (body->isNop()) {
     handleNop(body);
     return;
