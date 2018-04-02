@@ -395,6 +395,21 @@ llvm::Value* Executor::codegenIsNull(const Analyzer::UOper* uoper, const Compila
   return codegenIsNullNumber(operand_lv, ti);
 }
 
+llvm::Value* Executor::codegenIsTrue(const Analyzer::UOper* uoper, const CompilationOptions& co) {
+  const auto operand = uoper->get_operand();
+  if (dynamic_cast<const Analyzer::Constant*>(operand) &&
+      dynamic_cast<const Analyzer::Constant*>(operand)->get_is_null()) {
+    // for null constants, return false
+    return llvm::ConstantInt::getFalse(cgen_state_->context_);
+  }
+  const auto& ti = operand->get_type_info();
+  CHECK(ti.is_boolean());
+  const auto operand_lv = codegen(operand, true, co).front();
+  
+  return cgen_state_->ir_builder_.CreateICmp(llvm::ICmpInst::ICMP_EQ, operand_lv, 
+          llvm::ConstantInt::getTrue(cgen_state_->context_));
+}
+
 llvm::Value* Executor::codegenIsNullNumber(llvm::Value* operand_lv, const SQLTypeInfo& ti) {
   if (ti.is_fp()) {
     return cgen_state_->ir_builder_.CreateFCmp(

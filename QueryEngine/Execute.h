@@ -421,6 +421,9 @@ class Executor {
   llvm::Value* codegen(const Analyzer::DatetruncExpr*, const CompilationOptions&);
   llvm::Value* codegen(const Analyzer::CharLengthExpr*, const CompilationOptions&);
   llvm::Value* codegen(const Analyzer::LikeExpr*, const CompilationOptions&);
+  
+  llvm::Value* codegen(const Analyzer::SubstringExpr*, const CompilationOptions&);
+  
   llvm::Value* codegenDictLike(const std::shared_ptr<Analyzer::Expr> arg,
                                const Analyzer::Constant* pattern,
                                const bool ilike,
@@ -525,6 +528,7 @@ class Executor {
                                        llvm::Value* rhs_lv,
                                        llvm::BasicBlock* no_overflow_bb,
                                        const SQLTypeInfo& ti);
+  llvm::Value* codegenIsTrue(const Analyzer::UOper*, const CompilationOptions&);
   llvm::Value* codegenIsNull(const Analyzer::UOper*, const CompilationOptions&);
   llvm::Value* codegenIsNullNumber(llvm::Value*, const SQLTypeInfo&);
   llvm::Value* codegenUnnest(const Analyzer::UOper*, const CompilationOptions&);

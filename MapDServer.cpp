@@ -278,10 +278,14 @@ int main(int argc, char** argv) {
   desc.add_options()("null-div-by-zero",
                      po::value<bool>(&g_null_div_by_zero)->default_value(g_null_div_by_zero)->implicit_value(true),
                      "Return null on division by zero instead of throwing an exception");
+//  desc.add_options()("left-deep-join-optimization",
+//                     po::value<bool>(&g_left_deep_join_optimization)
+//                         ->default_value(g_left_deep_join_optimization)
+//                         ->implicit_value(true),
+//                     "Enable left-deep join optimization");
   desc.add_options()("left-deep-join-optimization",
                      po::value<bool>(&g_left_deep_join_optimization)
-                         ->default_value(g_left_deep_join_optimization)
-                         ->implicit_value(true),
+                         ->default_value(false),
                      "Enable left-deep join optimization");
   desc.add_options()(
       "from-table-reordering",

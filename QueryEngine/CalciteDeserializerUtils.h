@@ -77,6 +77,9 @@ inline SQLOps to_sql_op(const std::string& op_str) {
   if (op_str == std::string("IS NOT NULL")) {
     return kISNOTNULL;
   }
+  if (op_str == std::string("IS TRUE")) {
+    return kISTRUE;
+  }
   if (op_str == std::string("PG_UNNEST")) {
     return kUNNEST;
   }

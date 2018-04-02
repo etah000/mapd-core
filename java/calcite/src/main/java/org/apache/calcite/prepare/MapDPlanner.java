@@ -16,23 +16,22 @@
  */
 package org.apache.calcite.prepare;
 
+import com.google.common.collect.ImmutableList;
+import com.mapd.calcite.planner.PushupJoinFilterRule;
 import org.apache.calcite.adapter.java.JavaTypeFactory;
 import org.apache.calcite.config.CalciteConnectionConfig;
 import org.apache.calcite.config.CalciteConnectionConfigImpl;
 import org.apache.calcite.config.CalciteConnectionProperty;
 import org.apache.calcite.jdbc.CalciteSchema;
-import org.apache.calcite.plan.Context;
-import org.apache.calcite.plan.RelOptCluster;
-import org.apache.calcite.plan.RelOptLattice;
-import org.apache.calcite.plan.RelOptMaterialization;
-import org.apache.calcite.plan.RelOptPlanner;
-import org.apache.calcite.plan.RelOptSchema;
+import org.apache.calcite.plan.*;
 import org.apache.calcite.plan.RelOptTable.ViewExpander;
-import org.apache.calcite.plan.RelTraitDef;
-import org.apache.calcite.plan.RelTraitSet;
+import org.apache.calcite.plan.hep.HepPlanner;
+import org.apache.calcite.plan.hep.HepProgram;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
+import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.metadata.CachingRelMetadataProvider;
+import org.apache.calcite.rel.rules.ProjectMergeRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexExecutor;
@@ -40,6 +39,7 @@ import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlOperatorTable;
 import org.apache.calcite.sql.advise.SqlAdvisor;
+import org.apache.calcite.sql.advise.SqlAdvisorValidator;
 import org.apache.calcite.sql.parser.SqlParseException;
 import org.apache.calcite.sql.parser.SqlParser;
 import org.apache.calcite.sql.validate.SqlConformance;
@@ -49,16 +49,9 @@ import org.apache.calcite.sql.validate.SqlValidator;
 import org.apache.calcite.sql2rel.RelDecorrelator;
 import org.apache.calcite.sql2rel.SqlRexConvertletTable;
 import org.apache.calcite.sql2rel.SqlToRelConverter;
-import org.apache.calcite.tools.FrameworkConfig;
-import org.apache.calcite.tools.Frameworks;
-import org.apache.calcite.tools.Planner;
-import org.apache.calcite.tools.Program;
-import org.apache.calcite.tools.RelConversionException;
-import org.apache.calcite.tools.ValidationException;
+import org.apache.calcite.tools.*;
 import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.Util;
-
-import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Properties;
@@ -108,6 +101,7 @@ public class MapDPlanner implements Planner {
     this.traitDefs = config.getTraitDefs();
     this.convertletTable = config.getConvertletTable();
     this.executor = config.getExecutor();
+
     reset();
   }
 
@@ -262,7 +256,7 @@ public class MapDPlanner implements Planner {
     final SqlToRelConverter.Config config = SqlToRelConverter.configBuilder()
         .withConfig(sqlToRelConverterConfig)
         //MAT custom code mods to stop expansion and allow for any number IN
-        .withExpand(false)
+        .withExpand(true)
         .withInSubQueryThreshold(Integer.MAX_VALUE)
         //
         .withTrimUnusedFields(false)
@@ -275,8 +269,28 @@ public class MapDPlanner implements Planner {
         sqlToRelConverter.convertQuery(validatedSqlNode, false, true);
     root = root.withRel(sqlToRelConverter.flattenTypes(root.rel, true));
     root = root.withRel(RelDecorrelator.decorrelateQuery(root.rel));
+    root = root.withRel(removeJoinFilter(root.rel));
     state = State.STATE_5_CONVERTED;
     return root;
+  }
+
+  private RelNode removeJoinFilter(RelNode rootRel) {
+    HepProgram program = HepProgram.builder()
+            .addRuleInstance(new PushupJoinFilterRule(RelOptRule.operand(LogicalJoin.class, RelOptRule.any())))
+            .addRuleInstance(ProjectMergeRule.INSTANCE)
+            .build();
+    final RelOptCluster cluster = rootRel.getCluster();
+    HepPlanner planner = new HepPlanner(
+            program,
+            cluster.getPlanner().getContext(),
+            true,
+            null,
+            RelOptCostImpl.FACTORY);
+
+    planner.setRoot(rootRel);
+    RelNode relNode = planner.findBestExp();
+  //  planner.clear();
+    return relNode;
   }
 
   /** Implements {@link org.apache.calcite.plan.RelOptTable.ViewExpander}

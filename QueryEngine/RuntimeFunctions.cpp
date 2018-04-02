@@ -32,6 +32,7 @@
 #include <thread>
 #include <chrono>
 
+
 // decoder implementations
 
 #include "DecodersImpl.h"
@@ -874,6 +875,43 @@ extern "C" ALWAYS_INLINE uint64_t string_pack(const int8_t* ptr, const int32_t l
 #ifndef __CUDACC__
 #include "TopKRuntime.cpp"
 #endif
+
+extern "C" NEVER_INLINE DEVICE uint64_t subtring_nullable(
+                                                        const char* str,
+                                                        const int32_t str_len,
+                                                        const int16_t from, 
+                                                        const int16_t len)  {  // index in SQL substring begins from 0
+  if (!str) {
+    return int64_t(0);
+  }
+  
+  /*
+  char buf[32];
+  int cpylen = 0;
+  if (str_len>31) {
+      cpylen = 31;     
+  } 
+  else {
+      cpylen = str_len;
+  }
+  strncpy(buf, const_cast<char*>(str), cpylen);
+  buf[cpylen+1] = '\0';
+  
+  printf("*******************: %s, len: %d, from: %d, to: %d\n", buf, str_len, from, len);
+  */
+  
+  int32_t substr_len;
+  int8_t* ptr = reinterpret_cast<int8_t*>(const_cast<char*>(str));
+  if (from > str_len) {
+      substr_len = 0;
+  } 
+  else  {
+      ptr += (from -1);
+      substr_len = len > str_len - from + 1 ? str_len - from + 1 : len;
+  }
+  
+  return string_pack(ptr, substr_len);
+}
 
 extern "C" ALWAYS_INLINE DEVICE int32_t char_length(const char* str, const int32_t str_len) {
   return str_len;

@@ -80,6 +80,10 @@ std::vector<llvm::Value*> Executor::codegen(const Analyzer::Expr* expr,
   if (datediff_expr) {
     return {codegen(datediff_expr, co)};
   }
+  auto substring_expr = dynamic_cast<const Analyzer::SubstringExpr*>(expr);
+  if (substring_expr) {
+    return {codegen(substring_expr, co)};
+  }
   auto datetrunc_expr = dynamic_cast<const Analyzer::DatetruncExpr*>(expr);
   if (datetrunc_expr) {
     return {codegen(datetrunc_expr, co)};
@@ -148,6 +152,8 @@ llvm::Value* Executor::codegen(const Analyzer::UOper* u_oper, const CompilationO
       return codegenUMinus(u_oper, co);
     case kISNULL:
       return codegenIsNull(u_oper, co);
+    case kISTRUE:
+      return codegenIsTrue(u_oper, co);
     case kUNNEST:
       return codegenUnnest(u_oper, co);
     default:

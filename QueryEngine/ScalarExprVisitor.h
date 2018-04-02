@@ -64,6 +64,10 @@ class ScalarExprVisitor {
     if (char_length) {
       return visitCharLength(char_length);
     }
+    const auto substring = dynamic_cast<const Analyzer::SubstringExpr*>(expr);
+        if (substring) {
+          return visitSubstringExpr(substring);
+    }
     const auto like_expr = dynamic_cast<const Analyzer::LikeExpr*>(expr);
     if (like_expr) {
       return visitLikeExpr(like_expr);
@@ -221,6 +225,14 @@ class ScalarExprVisitor {
     T result = defaultResult();
     result = aggregateResult(result, visit(dateadd->get_number_expr()));
     result = aggregateResult(result, visit(dateadd->get_datetime_expr()));
+    return result;
+  }
+  
+   virtual T visitSubstringExpr(const Analyzer::SubstringExpr* substring) const {
+    T result = defaultResult();
+    result = aggregateResult(result, visit(substring->get_str()));
+    result = aggregateResult(result, visit(substring->get_from_expr()));
+    result = aggregateResult(result, visit(substring->get_len_expr()));
     return result;
   }
 

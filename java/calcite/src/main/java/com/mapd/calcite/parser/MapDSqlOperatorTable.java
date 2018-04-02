@@ -463,6 +463,25 @@ public class MapDSqlOperatorTable extends ChainedSqlOperatorTable {
             return typeFactory.createSqlType(SqlTypeName.INTEGER);
         }
     }
+    
+    public static class SubString extends SqlFunction {
+
+        public SubString() {
+            super("SUBSTRING",
+                    SqlKind.OTHER_FUNCTION,
+                    null,
+                    null,
+                    OperandTypes.family(SqlTypeFamily.STRING, SqlTypeFamily.INTEGER, SqlTypeFamily.INTEGER),
+                    SqlFunctionCategory.SYSTEM);
+        }
+
+        @Override
+        public RelDataType inferReturnType(SqlOperatorBinding opBinding) {
+            final RelDataTypeFactory typeFactory
+                    = opBinding.getTypeFactory();
+            return typeFactory.createSqlType(SqlTypeName.VARCHAR);
+        }
+    }
 
     public static class PgILike extends SqlFunction {
 

@@ -313,7 +313,7 @@ class Constant : public Expr {
 /*
  * @type UOper
  * @brief represents unary operator expressions.  operator types include
- * kUMINUS, kISNULL, kEXISTS, kCAST
+ * kUMINUS, kISNULL, kEXISTS, kCAST, kISTRUE
  */
 class UOper : public Expr {
  public:
@@ -668,6 +668,46 @@ class LikeExpr : public Expr {
                    // no inner '%','_','[',']'
 };
 
+
+/*
+ * @type SubstringExpr
+ * @brief expression for the SUBSTRING predicate.
+ * arg must evaluate to char, varchar or text.
+ */
+class SubstringExpr : public Expr {
+ public:
+  SubstringExpr(std::shared_ptr<Analyzer::Expr> str,
+           std::shared_ptr<Analyzer::Expr> from,
+           std::shared_ptr<Analyzer::Expr> len)
+      : Expr(kVARCHAR, false), str_(str), beginIndex_(from), len_(len) {}
+    
+  const Expr* get_str() const { return str_.get(); }
+  const Expr* get_from_expr() const { return beginIndex_.get(); }
+  const Expr* get_len_expr() const { return len_.get(); }
+  
+  virtual std::shared_ptr<Analyzer::Expr> deep_copy() const;
+  virtual void group_predicates(std::list<const Expr*>& scan_predicates,
+                                std::list<const Expr*>& join_predicates,
+                                std::list<const Expr*>& const_predicates) const;
+  virtual void collect_rte_idx(std::set<int>& rte_idx_set) const;
+  virtual void collect_column_var(std::set<const ColumnVar*, bool (*)(const ColumnVar*, const ColumnVar*)>& colvar_set,
+                                  bool include_agg) const;
+  virtual std::shared_ptr<Analyzer::Expr> rewrite_with_targetlist(
+      const std::vector<std::shared_ptr<TargetEntry>>& tlist) const;
+  virtual std::shared_ptr<Analyzer::Expr> rewrite_with_child_targetlist(
+      const std::vector<std::shared_ptr<TargetEntry>>& tlist) const;
+  virtual std::shared_ptr<Analyzer::Expr> rewrite_agg_to_var(
+      const std::vector<std::shared_ptr<TargetEntry>>& tlist) const;
+  virtual bool operator==(const Expr& rhs) const;
+  virtual void print() const;
+  virtual void find_expr(bool (*f)(const Expr*), std::list<const Expr*>& expr_list) const;
+
+ private:
+  std::shared_ptr<Analyzer::Expr> str_;      
+  std::shared_ptr<Analyzer::Expr> beginIndex_;    
+  std::shared_ptr<Analyzer::Expr> len_;  
+};
+
 /*
  * @type RegexpExpr
  * @brief expression for REGEXP.
@@ -955,6 +995,7 @@ class DatediffExpr : public Expr {
       const std::vector<std::shared_ptr<TargetEntry>>& tlist) const;
   virtual std::shared_ptr<Analyzer::Expr> rewrite_agg_to_var(
       const std::vector<std::shared_ptr<TargetEntry>>& tlist) const;
+  
   virtual bool operator==(const Expr& rhs) const;
   virtual void print() const;
   virtual void find_expr(bool (*f)(const Expr*), std::list<const Expr*>& expr_list) const;

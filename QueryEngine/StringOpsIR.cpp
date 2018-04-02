@@ -75,6 +75,30 @@ llvm::Value* Executor::codegen(const Analyzer::CharLengthExpr* expr, const Compi
              : cgen_state_->emitCall(fn_name, charlength_args);
 }
 
+llvm::Value* Executor::codegen(const Analyzer::SubstringExpr* expr, const CompilationOptions& co) {
+  CHECK(expr->get_str()->get_type_info().is_string());
+  auto str_lv = codegen(expr->get_str(), true, co);
+  
+  if (str_lv.size() != 3) {  //if its size is equal to 3, it is a NULL string constant.
+    CHECK_EQ(size_t(1), str_lv.size());
+    str_lv.push_back(cgen_state_->emitCall("extract_str_ptr", {str_lv.front()}));
+    str_lv.push_back(cgen_state_->emitCall("extract_str_len", {str_lv.front()}));
+    if (co.device_type_ == ExecutorDeviceType::GPU) {
+      throw QueryMustRunOnCpu();
+    }
+  } 
+  
+  auto from = codegen(expr->get_from_expr(), true, co).front();
+  CHECK(from->getType()->isIntegerTy());
+  auto len = codegen(expr->get_len_expr(), true, co).front();
+  CHECK(len->getType()->isIntegerTy());
+   
+  std::vector<llvm::Value*> substring_args{str_lv[1], str_lv[2], from, len};
+  std::string substring_fname{"subtring_nullable"};
+  
+  return cgen_state_->emitCall(substring_fname, substring_args);
+}
+
 llvm::Value* Executor::codegen(const Analyzer::LikeExpr* expr, const CompilationOptions& co) {
   if (is_unnest(extract_cast_arg(expr->get_arg()))) {
     throw std::runtime_error("LIKE not supported for unnested expressions");
