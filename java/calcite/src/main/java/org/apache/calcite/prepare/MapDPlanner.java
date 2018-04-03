@@ -31,6 +31,8 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.metadata.CachingRelMetadataProvider;
+import org.apache.calcite.rel.rules.FilterJoinRule;
+import org.apache.calcite.rel.rules.FilterProjectTransposeRule;
 import org.apache.calcite.rel.rules.ProjectMergeRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
@@ -53,6 +55,7 @@ import org.apache.calcite.tools.*;
 import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.Util;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 
@@ -275,9 +278,14 @@ public class MapDPlanner implements Planner {
   }
 
   private RelNode removeJoinFilter(RelNode rootRel) {
+    ArrayList<RelOptRule> ruleSubset = new ArrayList<>();
+    ruleSubset.add(ProjectMergeRule.INSTANCE);
+    ruleSubset.add(FilterProjectTransposeRule.INSTANCE);
+    ruleSubset.add(FilterJoinRule.FilterIntoJoinRule.FILTER_ON_JOIN);
+
     HepProgram program = HepProgram.builder()
             .addRuleInstance(new PushupJoinFilterRule(RelOptRule.operand(LogicalJoin.class, RelOptRule.any())))
-            .addRuleInstance(ProjectMergeRule.INSTANCE)
+            .addRuleCollection(ruleSubset)
             .build();
     final RelOptCluster cluster = rootRel.getCluster();
     HepPlanner planner = new HepPlanner(
