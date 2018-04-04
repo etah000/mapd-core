@@ -406,8 +406,7 @@ llvm::Value* Executor::codegenIsTrue(const Analyzer::UOper* uoper, const Compila
   CHECK(ti.is_boolean());
   const auto operand_lv = codegen(operand, true, co).front();
   
-  return cgen_state_->ir_builder_.CreateICmp(llvm::ICmpInst::ICMP_EQ, operand_lv, 
-          llvm::ConstantInt::getTrue(cgen_state_->context_));
+  return cgen_state_->ir_builder_.CreateICmp(llvm::ICmpInst::ICMP_EQ, operand_lv, ll_bool(true));
 }
 
 llvm::Value* Executor::codegenIsNullNumber(llvm::Value* operand_lv, const SQLTypeInfo& ti) {
