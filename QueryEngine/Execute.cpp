@@ -182,12 +182,27 @@ std::vector<int8_t> Executor::serializeLiterals(const std::unordered_map<int, Ex
   const auto& dev_literals = dev_literals_it->second;
   size_t lit_buf_size{0};
   std::vector<std::string> real_strings;
+  std::vector<std::vector<double>> double_array_literals;
+  std::vector<std::vector<int32_t>> int32_array_literals;
+  std::vector<std::vector<int8_t>> int8_array_literals;
   for (const auto& lit : dev_literals) {
     lit_buf_size = addAligned(lit_buf_size, Executor::literalBytes(lit));
     if (lit.which() == 7) {
       const auto p = boost::get<std::string>(&lit);
       CHECK(p);
       real_strings.push_back(*p);
+    } else if (lit.which() == 8) {
+      const auto p = boost::get<std::vector<double>>(&lit);
+      CHECK(p);
+      double_array_literals.push_back(*p);
+    } else if (lit.which() == 9) {
+      const auto p = boost::get<std::vector<int32_t>>(&lit);
+      CHECK(p);
+      int32_array_literals.push_back(*p);
+    } else if (lit.which() == 10) {
+      const auto p = boost::get<std::vector<int8_t>>(&lit);
+      CHECK(p);
+      int8_array_literals.push_back(*p);
     }
   }
   if (lit_buf_size > static_cast<size_t>(std::numeric_limits<int16_t>::max())) {
@@ -198,7 +213,29 @@ std::vector<int8_t> Executor::serializeLiterals(const std::unordered_map<int, Ex
     CHECK_LE(real_str.size(), static_cast<size_t>(std::numeric_limits<int16_t>::max()));
     lit_buf_size += real_str.size();
   }
+  if (double_array_literals.size() > 0)
+    lit_buf_size = align(lit_buf_size, sizeof(double));
+  int16_t crt_double_arr_lit_off = lit_buf_size;
+  for (const auto& double_array_literal : double_array_literals) {
+    CHECK_LE(double_array_literal.size(), static_cast<size_t>(std::numeric_limits<int16_t>::max()));
+    lit_buf_size += double_array_literal.size() * sizeof(double);
+  }
+  if (int32_array_literals.size() > 0)
+    lit_buf_size = align(lit_buf_size, sizeof(int32_t));
+  int16_t crt_int32_arr_lit_off = lit_buf_size;
+  for (const auto& int32_array_literal : int32_array_literals) {
+    CHECK_LE(int32_array_literal.size(), static_cast<size_t>(std::numeric_limits<int16_t>::max()));
+    lit_buf_size += int32_array_literal.size() * sizeof(int32_t);
+  }
+  int16_t crt_int8_arr_lit_off = lit_buf_size;
+  for (const auto& int8_array_literal : int8_array_literals) {
+    CHECK_LE(int8_array_literal.size(), static_cast<size_t>(std::numeric_limits<int16_t>::max()));
+    lit_buf_size += int8_array_literal.size();
+  }
   unsigned crt_real_str_idx = 0;
+  unsigned crt_double_arr_lit_idx = 0;
+  unsigned crt_int32_arr_lit_idx = 0;
+  unsigned crt_int8_arr_lit_idx = 0;
   std::vector<int8_t> serialized(lit_buf_size);
   size_t off{0};
   for (const auto& lit : dev_literals) {
@@ -258,6 +295,51 @@ std::vector<int8_t> Executor::serializeLiterals(const std::unordered_map<int, Ex
         memcpy(&serialized[crt_real_str_off], crt_real_str.data(), crt_real_str.size());
         ++crt_real_str_idx;
         crt_real_str_off += crt_real_str.size();
+        break;
+      }
+      case 8: {
+        const auto p = boost::get<std::vector<double>>(&lit);
+        CHECK(p);
+        int32_t off_and_len = crt_double_arr_lit_off << 16;
+        const auto& crt_double_arr_lit = double_array_literals[crt_double_arr_lit_idx];
+        int32_t len = crt_double_arr_lit.size();
+        CHECK_EQ((len >> 16), 0);
+        off_and_len |= static_cast<int16_t>(len);
+        int32_t double_array_bytesize = len * sizeof(double);
+        memcpy(&serialized[off - lit_bytes], &off_and_len, lit_bytes);
+        memcpy(&serialized[crt_double_arr_lit_off], crt_double_arr_lit.data(), double_array_bytesize);
+        ++crt_double_arr_lit_idx;
+        crt_double_arr_lit_off += double_array_bytesize;
+        break;
+      }
+      case 9: {
+        const auto p = boost::get<std::vector<int32_t>>(&lit);
+        CHECK(p);
+        int32_t off_and_len = crt_int32_arr_lit_off << 16;
+        const auto& crt_int32_arr_lit = int32_array_literals[crt_int32_arr_lit_idx];
+        int32_t len = crt_int32_arr_lit.size();
+        CHECK_EQ((len >> 16), 0);
+        off_and_len |= static_cast<int16_t>(len);
+        int32_t int32_array_bytesize = len * sizeof(int32_t);
+        memcpy(&serialized[off - lit_bytes], &off_and_len, lit_bytes);
+        memcpy(&serialized[crt_int32_arr_lit_off], crt_int32_arr_lit.data(), int32_array_bytesize);
+        ++crt_int32_arr_lit_idx;
+        crt_int32_arr_lit_off += int32_array_bytesize;
+        break;
+      }
+      case 10: {
+        const auto p = boost::get<std::vector<int8_t>>(&lit);
+        CHECK(p);
+        int32_t off_and_len = crt_int8_arr_lit_off << 16;
+        const auto& crt_int8_arr_lit = int8_array_literals[crt_int8_arr_lit_idx];
+        int32_t len = crt_int8_arr_lit.size();
+        CHECK_EQ((len >> 16), 0);
+        off_and_len |= static_cast<int16_t>(len);
+        int32_t int8_array_bytesize = len;
+        memcpy(&serialized[off - lit_bytes], &off_and_len, lit_bytes);
+        memcpy(&serialized[crt_int8_arr_lit_off], crt_int8_arr_lit.data(), int8_array_bytesize);
+        ++crt_int8_arr_lit_idx;
+        crt_int8_arr_lit_off += int8_array_bytesize;
         break;
       }
       default:
@@ -784,13 +866,14 @@ ResultPtr Executor::executeWorkUnit(int32_t* error_code,
                                     size_t& max_groups_buffer_entry_guess,
                                     const bool is_agg,
                                     const std::vector<InputTableInfo>& query_infos,
-                                    const RelAlgExecutionUnit& ra_exe_unit,
+                                    const RelAlgExecutionUnit& ra_exe_unit_in,
                                     const CompilationOptions& co,
                                     const ExecutionOptions& options,
                                     const Catalog_Namespace::Catalog& cat,
                                     std::shared_ptr<RowSetMemoryOwner> row_set_mem_owner,
                                     RenderInfo* render_info,
                                     const bool has_cardinality_estimation) {
+  const auto ra_exe_unit = addDeletedColumn(ra_exe_unit_in);
   const auto device_type = getDeviceTypeForTargets(ra_exe_unit, co.device_type_);
   CHECK(!query_infos.empty());
   if (!max_groups_buffer_entry_guess) {
@@ -2004,6 +2087,12 @@ int64_t insert_one_dict_str(T* col_data,
 
 }  // namespace
 
+namespace Importer_NS {
+
+int8_t* appendDatum(int8_t* buf, Datum d, const SQLTypeInfo& ti);
+
+}  // Importer_NS
+
 void Executor::executeSimpleInsert(const Planner::RootPlan* root_plan) {
   const auto plan = root_plan->get_plan();
   CHECK(plan);
@@ -2019,6 +2108,7 @@ void Executor::executeSimpleInsert(const Planner::RootPlan* root_plan) {
   std::vector<int> col_ids;
   std::unordered_map<int, std::unique_ptr<uint8_t[]>> col_buffers;
   std::unordered_map<int, std::vector<std::string>> str_col_buffers;
+  std::unordered_map<int, std::vector<ArrayDatum>> arr_col_buffers;
   auto& cat = root_plan->get_catalog();
   const auto table_descriptor = cat.getMetadataForTable(table_id);
   const auto shard_tables = cat.getPhysicalTablesDescriptors(table_descriptor);
@@ -2044,6 +2134,12 @@ void Executor::executeSimpleInsert(const Planner::RootPlan* root_plan) {
         default:
           CHECK(false);
       }
+    } else if (cd->columnType.is_geometry()) {
+      auto it_ok = str_col_buffers.insert(std::make_pair(col_id, std::vector<std::string>{}));
+      CHECK(it_ok.second);
+    } else if (cd->columnType.is_array()) {
+      auto it_ok = arr_col_buffers.insert(std::make_pair(col_id, std::vector<ArrayDatum>{}));
+      CHECK(it_ok.second);
     } else {
       const auto it_ok =
           col_buffers.emplace(col_id, std::unique_ptr<uint8_t[]>(new uint8_t[cd->columnType.get_logical_size()]));
@@ -2070,7 +2166,8 @@ void Executor::executeSimpleInsert(const Planner::RootPlan* root_plan) {
     auto col_datum = col_cv->get_constval();
     auto col_type = cd->columnType.is_decimal() ? decimal_to_int_type(cd->columnType) : cd->columnType.get_type();
     uint8_t* col_data_bytes{nullptr};
-    if (!cd->columnType.is_string() || cd->columnType.get_compression() == kENCODING_DICT) {
+    if (!cd->columnType.is_array() && !cd->columnType.is_geometry() &&
+        (!cd->columnType.is_string() || cd->columnType.get_compression() == kENCODING_DICT)) {
       const auto col_data_bytes_it = col_buffers.find(col_ids[col_idx]);
       CHECK(col_data_bytes_it != col_buffers.end());
       col_data_bytes = col_data_bytes_it->second.get();
@@ -2145,6 +2242,27 @@ void Executor::executeSimpleInsert(const Planner::RootPlan* root_plan) {
         *col_data = col_cv->get_is_null() ? inline_fixed_encoding_null_val(cd->columnType) : col_datum.timeval;
         break;
       }
+      case kARRAY: {
+        const auto l = col_cv->get_value_list();
+        SQLTypeInfo elem_ti = cd->columnType.get_elem_type();
+        CHECK(!elem_ti.is_string());
+        size_t len = l.size() * elem_ti.get_size();
+        int8_t* buf = (int8_t*)checked_malloc(len);
+        int8_t* p = buf;
+        for (auto& e : l) {
+          auto c = std::dynamic_pointer_cast<Analyzer::Constant>(e);
+          CHECK(c);
+          p = Importer_NS::appendDatum(p, c->get_constval(), elem_ti);
+        }
+        arr_col_buffers[col_ids[col_idx]].push_back(ArrayDatum(len, buf, len == 0));
+        break;
+      }
+      case kPOINT:
+      case kLINESTRING:
+      case kPOLYGON:
+      case kMULTIPOLYGON:
+        str_col_buffers[col_ids[col_idx]].push_back(col_datum.stringval ? *col_datum.stringval : "");
+        break;
       default:
         CHECK(false);
     }
@@ -2163,6 +2281,12 @@ void Executor::executeSimpleInsert(const Planner::RootPlan* root_plan) {
     insert_data.columnIds.push_back(kv.first);
     DataBlockPtr p;
     p.stringsPtr = &kv.second;
+    insert_data.data.push_back(p);
+  }
+  for (auto& kv : arr_col_buffers) {
+    insert_data.columnIds.push_back(kv.first);
+    DataBlockPtr p;
+    p.arraysPtr = &kv.second;
     insert_data.data.push_back(p);
   }
   insert_data.numRows = 1;
@@ -2561,6 +2685,25 @@ llvm::Value* Executor::castToIntPtrTyIn(llvm::Value* val, const size_t bitWidth)
 #include "DateAdd.cpp"
 #include "StringFunctions.cpp"
 #undef EXECUTE_INCLUDE
+
+RelAlgExecutionUnit Executor::addDeletedColumn(const RelAlgExecutionUnit& ra_exe_unit) {
+  auto ra_exe_unit_with_deleted = ra_exe_unit;
+  for (const auto& input_table : ra_exe_unit_with_deleted.input_descs) {
+    if (input_table.getSourceType() != InputSourceType::TABLE) {
+      continue;
+    }
+    const auto td = catalog_->getMetadataForTable(input_table.getTableId());
+    CHECK(td);
+    const auto deleted_cd = catalog_->getDeletedColumn(td);
+    if (!deleted_cd) {
+      continue;
+    }
+    CHECK(deleted_cd->columnType.is_boolean());
+    ra_exe_unit_with_deleted.input_col_descs.emplace_back(
+        new InputColDescriptor(deleted_cd->columnId, deleted_cd->tableId, input_table.getNestLevel()));
+  }
+  return ra_exe_unit_with_deleted;
+}
 
 void Executor::allocateLocalColumnIds(const std::list<std::shared_ptr<const InputColDescriptor>>& global_col_ids) {
   for (const auto& col_id : global_col_ids) {

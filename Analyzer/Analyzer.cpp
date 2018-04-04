@@ -34,7 +34,7 @@
 namespace Analyzer {
 
 Constant::~Constant() {
-  if (type_info.is_string() && !is_null)
+  if ((type_info.is_string() || type_info.is_geometry()) && !is_null)
     delete constval.stringval;
 }
 
@@ -80,8 +80,11 @@ std::shared_ptr<Analyzer::Expr> Var::deep_copy() const {
 
 std::shared_ptr<Analyzer::Expr> Constant::deep_copy() const {
   Datum d = constval;
-  if (type_info.is_string() && !is_null) {
+  if ((type_info.is_string() || type_info.is_geometry()) && !is_null) {
     d.stringval = new std::string(*constval.stringval);
+  }
+  if (type_info.get_type() == kARRAY) {
+    return makeExpr<Constant>(type_info, is_null, value_list);
   }
   return makeExpr<Constant>(type_info, is_null, d);
 }
@@ -836,6 +839,10 @@ void Constant::do_cast(const SQLTypeInfo& new_type_info) {
   if (new_type_info.is_number() &&
       (type_info.is_number() || type_info.get_type() == kTIMESTAMP || type_info.get_type() == kBOOLEAN)) {
     cast_number(new_type_info);
+  } else if (new_type_info.is_geometry() && type_info.is_string()) {
+    type_info = new_type_info;
+  } else if (new_type_info.is_geometry() && type_info.get_type() == new_type_info.get_type()) {
+    type_info = new_type_info;
   } else if (new_type_info.is_boolean() && type_info.is_boolean()) {
     type_info = new_type_info;
   } else if (new_type_info.is_string() && type_info.is_string()) {
@@ -849,6 +856,15 @@ void Constant::do_cast(const SQLTypeInfo& new_type_info) {
   } else if (new_type_info.get_type() == kDATE && type_info.get_type() == kTIMESTAMP) {
     type_info = new_type_info;
     constval.timeval = DateTruncate(dtDAY, constval.timeval);
+  } else if (new_type_info.is_array() && type_info.is_array()) {
+    auto new_sub_ti = SQLTypeInfo(new_type_info.get_subtype(), new_type_info.get_notnull());
+    for (auto& v : value_list) {
+      auto c = std::dynamic_pointer_cast<Analyzer::Constant>(v);
+      if (!c)
+        throw std::runtime_error("Invalid array cast.");
+      c->do_cast(new_sub_ti);
+    }
+    type_info = new_type_info;
   } else
     throw std::runtime_error("Invalid cast.");
 }
@@ -884,6 +900,12 @@ void Constant::set_null_value() {
     case kVARCHAR:
     case kCHAR:
     case kTEXT:
+      constval.stringval = nullptr;
+      break;
+    case kPOINT:
+    case kLINESTRING:
+    case kPOLYGON:
+    case kMULTIPOLYGON:
       constval.stringval = nullptr;
       break;
     case kFLOAT:
@@ -958,13 +980,13 @@ std::shared_ptr<Analyzer::Expr> Subquery::add_cast(const SQLTypeInfo& new_type_i
 }
 
 void RangeTblEntry::add_all_column_descs(const Catalog_Namespace::Catalog& catalog) {
-  column_descs = catalog.getAllColumnMetadataForTable(table_desc->tableId, true, true);
+  column_descs = catalog.getAllColumnMetadataForTable(table_desc->tableId, true, true, true);
 }
 
 void RangeTblEntry::expand_star_in_targetlist(const Catalog_Namespace::Catalog& catalog,
                                               std::vector<std::shared_ptr<TargetEntry>>& tlist,
                                               int rte_idx) {
-  column_descs = catalog.getAllColumnMetadataForTable(table_desc->tableId, false, true);
+  column_descs = catalog.getAllColumnMetadataForTable(table_desc->tableId, false, true, true);
   for (auto col_desc : column_descs) {
     auto cv = makeExpr<ColumnVar>(col_desc->columnType, table_desc->tableId, col_desc->columnId, rte_idx);
     auto tle = std::make_shared<TargetEntry>(col_desc->columnName, cv, false);
@@ -1631,7 +1653,15 @@ bool Datum_equal(const SQLTypeInfo& ti, Datum val1, Datum val2) {
       return val1.doubleval == val2.doubleval;
     case kTIME:
     case kTIMESTAMP:
+    case kDATE:
+    case kINTERVAL_DAY_TIME:
+    case kINTERVAL_YEAR_MONTH:
       return val1.timeval == val2.timeval;
+    case kPOINT:
+    case kLINESTRING:
+    case kPOLYGON:
+    case kMULTIPOLYGON:
+      return *val1.stringval == *val2.stringval;
     default:
       CHECK(false);
   }

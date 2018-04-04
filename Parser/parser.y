@@ -164,13 +164,13 @@ using namespace Parser;
 
 	/* literal keyword tokens */
 
-%token ALL ALTER AMMSC ANY AS ASC AUTHORIZATION BETWEEN BIGINT BOOLEAN BY
+%token ALL ALTER AMMSC ANY ARRAY AS ASC AUTHORIZATION BETWEEN BIGINT BOOLEAN BY
 %token CASE CAST CHAR_LENGTH CHARACTER CHECK CLOSE COLUMN COMMIT CONTINUE COPY CREATE CURRENT
 %token CURSOR DATABASE DATE DATETIME DATE_TRUNC DECIMAL DECLARE DEFAULT DELETE DESC DICTIONARY DISTINCT DOUBLE DROP
 %token ELSE END EXISTS EXPLAIN EXTRACT FETCH FIRST FLOAT FOR FOREIGN FOUND FROM
-%token GRANT GROUP HAVING IF ILIKE IN INSERT INTEGER INTO
-%token IS LANGUAGE LAST LENGTH LIKE LIMIT MOD NOW NULLX NUMERIC OF OFFSET ON OPEN OPTION
-%token ORDER PARAMETER PRECISION PRIMARY PRIVILEGES PROCEDURE
+%token GEOGRAPHY GEOMETRY GRANT GROUP HAVING IF ILIKE IN INSERT INTEGER INTO
+%token IS LANGUAGE LAST LENGTH LIKE LIMIT LINESTRING MOD MULTIPOLYGON NOW NULLX NUMERIC OF OFFSET ON OPEN OPTION
+%token ORDER PARAMETER POINT POLYGON PRECISION PRIMARY PRIVILEGES PROCEDURE
 %token SMALLINT SOME TABLE TEMPORARY TEXT THEN TIME TIMESTAMP TO TRUNCATE UNION
 %token PUBLIC REAL REFERENCES RENAME REVOKE ROLE ROLLBACK SCHEMA SELECT SET SHARD SHARED SHOW
 %token UNIQUE UPDATE USER VALUES VIEW WHEN WHENEVER WHERE WITH WORK
@@ -1083,18 +1083,25 @@ function_ref:
 	;
 
 literal:
-    STRING { $<nodeval>$ = new StringLiteral($<stringval>1); }
-  | INTNUM { $<nodeval>$ = new IntLiteral($<intval>1); }
-  | NOW '(' ')' { $<nodeval>$ = new TimestampLiteral(); }
-  | DATETIME '(' general_exp ')' { delete dynamic_cast<Expr*>($<nodeval>3); $<nodeval>$ = new TimestampLiteral(); }
-  | FIXEDNUM
-  {
-    $<nodeval>$ = new FixedPtLiteral($<stringval>1);
-  }
-	| FLOAT { $<nodeval>$ = new FloatLiteral($<floatval>1); }
-	| DOUBLE { $<nodeval>$ = new DoubleLiteral($<doubleval>1); }
-	| data_type STRING
-	{ $<nodeval>$ = new CastExpr(new StringLiteral($<stringval>2), dynamic_cast<SQLType*>($<nodeval>1)); }
+		STRING { $<nodeval>$ = new StringLiteral($<stringval>1); }
+	|	INTNUM { $<nodeval>$ = new IntLiteral($<intval>1); }
+	|	NOW '(' ')' { $<nodeval>$ = new TimestampLiteral(); }
+	|	DATETIME '(' general_exp ')' { delete dynamic_cast<Expr*>($<nodeval>3); $<nodeval>$ = new TimestampLiteral(); }
+	|	FIXEDNUM { $<nodeval>$ = new FixedPtLiteral($<stringval>1); }
+	|	FLOAT { $<nodeval>$ = new FloatLiteral($<floatval>1); }
+	|	DOUBLE { $<nodeval>$ = new DoubleLiteral($<doubleval>1); }
+	|	data_type STRING { $<nodeval>$ = new CastExpr(new StringLiteral($<stringval>2), dynamic_cast<SQLType*>($<nodeval>1)); }
+	|	'{' literal_commalist '}' { $<nodeval>$ = new ArrayLiteral(reinterpret_cast<std::list<Expr*>*>($<listval>2)); }
+	|	ARRAY '[' literal_commalist ']' { $<nodeval>$ = new ArrayLiteral(reinterpret_cast<std::list<Expr*>*>($<listval>3)); }
+	;
+
+literal_commalist:
+		literal { $<listval>$ = new std::list<Node*>(1, $<nodeval>1); }
+	|	literal_commalist ',' literal
+	{
+		$<listval>$ = $<listval>1;
+		$<listval>$->push_back($<nodeval>3);
+	}
 	;
 
 	/* miscellaneous */
@@ -1156,12 +1163,33 @@ data_type:
 	| TIME '(' non_neg_int ')' { $<nodeval>$ = new SQLType(kTIME, $<intval>3); }
 	| TIMESTAMP { $<nodeval>$ = new SQLType(kTIMESTAMP); }
 	| TIMESTAMP '(' non_neg_int ')' { $<nodeval>$ = new SQLType(kTIMESTAMP, $<intval>3); }
-  | data_type '[' ']'
-  { $<nodeval>$ = $<nodeval>1;
-    if (dynamic_cast<SQLType*>($<nodeval>$)->get_is_array())
-      throw std::runtime_error("array of array not supported.");
-    dynamic_cast<SQLType*>($<nodeval>$)->set_is_array(true); }
+	| geo_type { $<nodeval>$ = new SQLType(static_cast<SQLTypes>($<intval>1)); }
+	| geography_type { $<nodeval>$ = $<nodeval>1; }
+	| geometry_type { $<nodeval>$ = $<nodeval>1; }
+	| data_type '[' ']'
+	{
+		$<nodeval>$ = $<nodeval>1;
+		if (dynamic_cast<SQLType*>($<nodeval>$)->get_is_array())
+		  throw std::runtime_error("array of array not supported.");
+		dynamic_cast<SQLType*>($<nodeval>$)->set_is_array(true);
+	}
 	;
+
+geo_type:	POINT { $<intval>$ = kPOINT; }
+	|	LINESTRING { $<intval>$ = kLINESTRING; }
+	|	POLYGON { $<intval>$ = kPOLYGON; }
+	|	MULTIPOLYGON { $<intval>$ = kMULTIPOLYGON; }
+	;
+
+geography_type:	GEOGRAPHY '(' geo_type ')'
+		{ $<nodeval>$ = new SQLType(static_cast<SQLTypes>($<intval>3), 4326, 4326, false); }
+	|	GEOGRAPHY '(' geo_type ',' INTNUM ')'
+		{ $<nodeval>$ = new SQLType(static_cast<SQLTypes>($<intval>3), $<intval>5, $<intval>5, false); }
+
+geometry_type:	GEOMETRY '(' geo_type ')'
+		{ $<nodeval>$ = new SQLType(static_cast<SQLTypes>($<intval>3), 0, 0, false); }
+	|	GEOMETRY '(' geo_type ',' INTNUM ')'
+		{ $<nodeval>$ = new SQLType(static_cast<SQLTypes>($<intval>3), $<intval>5, $<intval>5, false); }
 
 	/* the various things you can name */
 

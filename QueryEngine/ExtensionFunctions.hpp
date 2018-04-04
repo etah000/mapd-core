@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 
+#define EXTENSION_INLINE extern "C" ALWAYS_INLINE DEVICE
 #define EXTENSION_NOINLINE extern "C" NEVER_INLINE DEVICE
 
 /* Example extension functions:
@@ -642,3 +643,6 @@ float reg_hex_vert_pixel_bin_y(const float valx,
   // now convert the cube/hex coord to a pixel location
   return hexsize * sqrt3 * (rz + rx / 2.0f) + yoffset;
 }
+
+
+#include "ExtensionFunctionsGeo.hpp"

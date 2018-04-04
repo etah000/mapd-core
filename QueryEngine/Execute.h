@@ -356,7 +356,17 @@ class Executor {
 
   ExpressionRange getColRange(const PhysicalInput&) const;
 
-  typedef boost::variant<int8_t, int16_t, int32_t, int64_t, float, double, std::pair<std::string, int>, std::string>
+  typedef boost::variant<int8_t,
+                         int16_t,
+                         int32_t,
+                         int64_t,
+                         float,
+                         double,
+                         std::pair<std::string, int>,
+                         std::string,
+                         std::vector<double>,
+                         std::vector<int32_t>,
+                         std::vector<int8_t>>
       LiteralValue;
   typedef std::vector<LiteralValue> LiteralValues;
 
@@ -554,6 +564,7 @@ class Executor {
   std::vector<llvm::Value*> codegenFunctionOperCastArgs(const Analyzer::FunctionOper*,
                                                         const ExtensionFunction*,
                                                         const std::vector<llvm::Value*>&,
+                                                        const std::unordered_map<llvm::Value*, llvm::Value*>&,
                                                         const CompilationOptions&);
   llvm::Value* castArrayPointer(llvm::Value* ptr, const SQLTypeInfo& elem_ti);
   llvm::ConstantInt* codegenIntConst(const Analyzer::Constant* constant);
@@ -963,11 +974,17 @@ class Executor {
                                     const bool has_cardinality_estimation,
                                     ColumnCacheMap& column_cache,
                                     RenderInfo* render_info = nullptr);
+  // Generate code to skip the deleted rows in the outermost table.
+  llvm::BasicBlock* codegenSkipDeletedOuterTableRow(const RelAlgExecutionUnit& ra_exe_unit,
+                                                    const CompilationOptions& co);
   std::vector<JoinLoop> buildJoinLoops(RelAlgExecutionUnit& ra_exe_unit,
                                        const CompilationOptions& co,
                                        const ExecutionOptions& eo,
                                        const std::vector<InputTableInfo>& query_infos,
                                        ColumnCacheMap& column_cache);
+  // Create a callback which generates code which returns true iff the row on the given level is deleted.
+  std::function<llvm::Value*(const std::vector<llvm::Value*>&, llvm::Value*)>
+  buildIsDeletedCb(const RelAlgExecutionUnit& ra_exe_unit, const size_t level_idx, const CompilationOptions& co);
   // Builds a join hash table for the provided conditions on the current level.
   // Returns null iff on failure and provides the reasons in `fail_reasons`.
   std::shared_ptr<JoinHashTableInterface> buildCurrentLevelHashTable(const JoinCondition& current_level_join_conditions,
@@ -976,7 +993,7 @@ class Executor {
                                                                      const std::vector<InputTableInfo>& query_infos,
                                                                      ColumnCacheMap& column_cache,
                                                                      std::vector<std::string>& fail_reasons);
-  void addJoinLoopIterator(const std::vector<llvm::Value*>& prev_iters, const size_t level_idx);
+  llvm::Value* addJoinLoopIterator(const std::vector<llvm::Value*>& prev_iters, const size_t level_idx);
   void codegenJoinLoops(const std::vector<JoinLoop>& join_loops,
                         const RelAlgExecutionUnit& ra_exe_unit,
                         GroupByAndAggregate& group_by_and_aggregate,
@@ -1069,6 +1086,7 @@ class Executor {
   llvm::Value* castToTypeIn(llvm::Value* val, const size_t bit_width);
   llvm::Value* castToIntPtrTyIn(llvm::Value* val, const size_t bit_width);
 
+  RelAlgExecutionUnit addDeletedColumn(const RelAlgExecutionUnit& ra_exe_unit);
   void allocateLocalColumnIds(const std::list<std::shared_ptr<const InputColDescriptor>>& global_col_ids);
   int getLocalColumnId(const Analyzer::ColumnVar* col_var, const bool fetch_column) const;
 
@@ -1095,24 +1113,38 @@ class Executor {
   static size_t literalBytes(const LiteralValue& lit) {
     switch (lit.which()) {
       case 0:
-        return 1;
+        return 1;  // int8_t
       case 1:
-        return 2;
+        return 2;  // int16_t
       case 2:
-        return 4;
+        return 4;  // int32_t
       case 3:
-        return 8;
+        return 8;  // int64_t
       case 4:
-        return 4;
+        return 4;  // float
       case 5:
-        return 8;
+        return 8;  // double
       case 6:
-        return 4;
+        return 4;  // std::pair<std::string, int>
       case 7:
-        return 4;
+        return 4;  // std::string
+      case 8:
+        return 4;  // std::vector<double>
+      case 9:
+        return 4;  // std::vector<int32_t>
+      case 10:
+        return 4;  // std::vector<int8_t>
       default:
         abort();
     }
+  }
+
+  static size_t align(const size_t off_in, const size_t alignment) {
+    size_t off = off_in;
+    if (off % alignment != 0) {
+      off += (alignment - off % alignment);
+    }
+    return off;
   }
 
   static size_t addAligned(const size_t off_in, const size_t alignment) {
@@ -1191,6 +1223,32 @@ class Executor {
         case kINTERVAL_YEAR_MONTH:
           // TODO(alex): support null
           return getOrAddLiteral(static_cast<int64_t>(constant->get_constval().timeval), device_id);
+        case kARRAY: {
+          if (enc_type == kENCODING_NONE) {
+            if (ti.get_subtype() == kDOUBLE) {
+              std::vector<double> double_array_literal;
+              for (const auto& value : constant->get_value_list()) {
+                const auto c = dynamic_cast<const Analyzer::Constant*>(value.get());
+                CHECK(c);
+                double d = c->get_constval().doubleval;
+                double_array_literal.push_back(d);
+              }
+              return getOrAddLiteral(double_array_literal, device_id);
+            }
+            if (ti.get_subtype() == kINT) {
+              std::vector<int32_t> int32_array_literal;
+              for (const auto& value : constant->get_value_list()) {
+                const auto c = dynamic_cast<const Analyzer::Constant*>(value.get());
+                CHECK(c);
+                int32_t i = c->get_constval().intval;
+                int32_array_literal.push_back(i);
+              }
+              return getOrAddLiteral(int32_array_literal, device_id);
+            }
+            throw std::runtime_error("Unsupported literal array");
+          }
+          throw std::runtime_error("Encoded literal arrays are not supported");
+        }
         default:
           abort();
       }

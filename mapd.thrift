@@ -15,7 +15,11 @@ enum TDatumType {
   DATE,
   BOOL,
   INTERVAL_DAY_TIME,
-  INTERVAL_YEAR_MONTH
+  INTERVAL_YEAR_MONTH,
+  POINT,
+  LINESTRING,
+  POLYGON,
+  MULTIPOLYGON
 }
 
 enum TEncodingType {
@@ -75,7 +79,8 @@ struct TColumnType {
   2: TTypeInfo col_type,
   3: bool is_reserved_keyword,
   4: string src_name,
-  5: bool is_system
+  5: bool is_system,
+  6: bool is_physical
 }
 
 struct TRow {
@@ -161,6 +166,9 @@ struct TCopyParams {
   10: string array_end
   11: i32 threads
   12: TTableType table_type=TTableType.DELIMITED
+  13: string s3_access_key
+  14: string s3_secret_key
+  15: string s3_region
 }
 
 struct TDetectResult {

@@ -42,6 +42,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 
 #include <thrift/protocol/TBinaryProtocol.h>
@@ -52,6 +53,9 @@
 #include "../Fragmenter/InsertOrderFragmenter.h"
 #include "MapDRelease.h"
 #include "MapDServer.h"
+#include "Shared/checked_alloc.h"
+#include "Shared/mapd_shared_ptr.h"
+#include "Shared/ThriftTypesConvert.h"
 #include "Shared/checked_alloc.h"
 #include "gen-cpp/MapD.h"
 
@@ -65,8 +69,6 @@ using namespace ::apache::thrift::protocol;
 using namespace ::apache::thrift::transport;
 
 const std::string MapDQLRelease(MAPD_RELEASE);
-
-using boost::shared_ptr;
 
 namespace {
 
@@ -171,6 +173,32 @@ void detect_table(char* file_name, TCopyParams& copy_params, ClientContext& cont
 
   try {
     context.client.detect_column_types(_return, context.session, file_name, copy_params);
+    // print result only for verifying detect_column_types api
+    // as this cmd seems never planned for public use
+    for (const auto tct : _return.row_set.row_desc)
+      printf("%20.20s ", tct.col_name.c_str());
+    printf("\n");
+    for (const auto tct : _return.row_set.row_desc)
+      printf("%20.20s ", type_info_from_thrift(tct.col_type).get_type_name().c_str());
+    printf("\n");
+    for (const auto row : _return.row_set.rows) {
+      for (const auto col : row.cols)
+        printf("%20.20s ", col.val.str_val.c_str());
+      printf("\n");
+    }
+    // output CREATE TABLE command
+    std::stringstream oss;
+    oss << "CREATE TABLE your_table_name(";
+    for (size_t i = 0; i < _return.row_set.row_desc.size(); ++i) {
+      const auto tct = _return.row_set.row_desc[i];
+      oss << (i ? ", " : "") << tct.col_name << " " << type_info_from_thrift(tct.col_type).get_type_name();
+      if (type_info_from_thrift(tct.col_type).is_string())
+        oss << " ENCODING DICT";
+      if (type_info_from_thrift(tct.col_type).is_array())
+        oss << "[]";
+    }
+    oss << ");";
+    printf("\n%s\n", oss.str().c_str());
   } catch (TMapDException& e) {
     std::cerr << e.error_msg << std::endl;
   } catch (TException& te) {
@@ -433,6 +461,36 @@ std::string datum_to_string(const TDatum& datum, const TTypeInfo& type_info) {
     }
     return "{" + boost::algorithm::join(elem_strs, ", ") + "}";
   }
+  if (type_info.type == TDatumType::POINT || type_info.type == TDatumType::LINESTRING ||
+      type_info.type == TDatumType::POLYGON || type_info.type == TDatumType::MULTIPOLYGON) {
+    std::vector<std::string> elem_strs;
+    elem_strs.reserve(datum.val.arr_val.size());
+    TTypeInfo elem_type_info{type_info};
+    elem_type_info.type = TDatumType::DOUBLE;
+    elem_type_info.is_array = false;
+    std::string last_coord;
+    for (auto elem_datum_it = datum.val.arr_val.begin(); elem_datum_it != datum.val.arr_val.end(); ++elem_datum_it) {
+      if (std::distance(datum.val.arr_val.begin(), elem_datum_it) % 2 == 0) {
+        last_coord = scalar_datum_to_string(*elem_datum_it, elem_type_info);
+      } else {
+        elem_strs.push_back(last_coord + " " + scalar_datum_to_string(*elem_datum_it, elem_type_info));
+      }
+    }
+    std::string prefix, suffix{")"};
+    if (type_info.type == TDatumType::POINT) {
+      prefix = std::string("POINT(");
+    } else if (type_info.type == TDatumType::LINESTRING) {
+      prefix = std::string("LINESTRING(");
+    } else if (type_info.type == TDatumType::POLYGON) {
+      prefix = std::string("POLYGON((");
+      suffix = std::string("))");
+    } else {
+      prefix = std::string("MULTIPOLYGON(((");
+      suffix = std::string(")))");
+    }
+    // TODO: need to break coord list into rings (POLYGON) and polys/rings (MULTIPOLYGON)
+    return prefix + boost::algorithm::join(elem_strs, ", ") + suffix;
+  }
   return scalar_datum_to_string(datum, type_info);
 }
 
@@ -473,6 +531,24 @@ TDatum columnar_val_to_datum(const TColumn& col, const size_t row_idx, const TTy
       datum.val.str_val = col.data.str_col[row_idx];
       break;
     }
+    case TDatumType::POINT:
+    case TDatumType::LINESTRING:
+    case TDatumType::POLYGON:
+    case TDatumType::MULTIPOLYGON: {
+      auto elem_type = col_type;
+      elem_type.type = TDatumType::DOUBLE;
+      elem_type.is_array = false;
+      datum.is_null = false;
+      CHECK_LT(row_idx, col.data.arr_col.size());
+      const auto& arr_col = col.data.arr_col[row_idx];
+      for (size_t elem_idx = 0; elem_idx < arr_col.nulls.size(); ++elem_idx) {
+        TColumn elem_col;
+        elem_col.data = arr_col.data;
+        elem_col.nulls = arr_col.nulls;
+        datum.val.arr_val.push_back(columnar_val_to_datum(elem_col, elem_idx, elem_type));
+      }
+      return datum;
+    }
     default:
       CHECK(false);
   }
@@ -482,10 +558,6 @@ TDatum columnar_val_to_datum(const TColumn& col, const size_t row_idx, const TTy
 // based on http://www.gnu.org/software/libc/manual/html_node/getpass.html
 std::string mapd_getpass() {
   struct termios origterm, tmpterm;
-  int nread;
-
-  size_t MAX_PASSWORD_LENGTH{256};
-  char* password = (char*)checked_malloc(MAX_PASSWORD_LENGTH);
 
   tcgetattr(STDIN_FILENO, &origterm);
   tmpterm = origterm;
@@ -493,12 +565,13 @@ std::string mapd_getpass() {
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &tmpterm);
 
   std::cout << "Password: ";
-  nread = getline(&password, &MAX_PASSWORD_LENGTH, stdin);
+  std::string password;
+  std::getline(std::cin, password);
   std::cout << std::endl;
 
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &origterm);
 
-  return std::string(password, nread - 1);
+  return password;
 }
 
 enum Action { INITIALIZE, TURN_ON, TURN_OFF, INTERRUPT };
@@ -524,16 +597,16 @@ bool backchannel(int action, ClientContext* cc) {
   }
   if (state == INTERRUPTIBLE && action == INTERRUPT) {
     CHECK(context);
-    shared_ptr<TTransport> transport2;
-    shared_ptr<TProtocol> protocol2;
-    shared_ptr<TTransport> socket2;
+    mapd::shared_ptr<TTransport> transport2;
+    mapd::shared_ptr<TProtocol> protocol2;
+    mapd::shared_ptr<TTransport> socket2;
     if (context->http) {
-      transport2 = shared_ptr<TTransport>(new THttpClient(context->server_host, context->port, "/"));
-      protocol2 = shared_ptr<TProtocol>(new TJSONProtocol(transport2));
+      transport2 = mapd::shared_ptr<TTransport>(new THttpClient(context->server_host, context->port, "/"));
+      protocol2 = mapd::shared_ptr<TProtocol>(new TJSONProtocol(transport2));
     } else {
-      socket2 = shared_ptr<TTransport>(new TSocket(context->server_host, context->port));
-      transport2 = shared_ptr<TTransport>(new TBufferedTransport(socket2));
-      protocol2 = shared_ptr<TProtocol>(new TBinaryProtocol(transport2));
+      socket2 = mapd::shared_ptr<TTransport>(new TSocket(context->server_host, context->port));
+      transport2 = mapd::shared_ptr<TTransport>(new TBufferedTransport(socket2));
+      protocol2 = mapd::shared_ptr<TProtocol>(new TBinaryProtocol(transport2));
     }
     MapDClient c2(protocol2);
     ClientContext context2(*transport2, c2);
@@ -582,7 +655,7 @@ void register_signal_handler() {
   signal(SIGINT, mapdql_signal_handler);
 }
 
-void print_memory_summary(ClientContext context, std::string memory_level) {
+void print_memory_summary(ClientContext& context, std::string memory_level) {
   std::ostringstream tss;
   std::vector<TNodeMemoryInfo> memory_info;
   std::string sub_system;
@@ -662,7 +735,7 @@ void print_memory_summary(ClientContext context, std::string memory_level) {
   std::cout << tss.str() << std::endl;
 }
 
-void print_memory_info(ClientContext context, std::string memory_level) {
+void print_memory_info(ClientContext& context, std::string memory_level) {
   int MB = 1024 * 1024;
   std::ostringstream tss;
   std::vector<TNodeMemoryInfo> memory_info;
@@ -755,7 +828,7 @@ std::string print_hardware_specification(THardwareInfo hw_spec) {
   return tss.str();
 }
 
-void print_all_hardware_info(ClientContext context) {
+void print_all_hardware_info(ClientContext& context) {
   std::ostringstream tss;
   for (auto hw_info : context.cluster_hardware_info.hardware_info) {
     tss << "===========================================" << std::endl;
@@ -765,7 +838,7 @@ void print_all_hardware_info(ClientContext context) {
   std::cout << tss.str();
 }
 
-void get_role(ClientContext context) {
+void get_role(ClientContext& context) {
   context.role_names.clear();
   context.userPrivateRole = false;
   if (thrift_with_retry(kGET_ROLE, context, context.privs_role_name.c_str())) {
@@ -779,7 +852,7 @@ void get_role(ClientContext context) {
   }
 }
 
-void get_db_objects_for_role(ClientContext context) {
+void get_db_objects_for_role(ClientContext& context) {
   context.role_names.clear();
   context.userPrivateRole = true;
   if (thrift_with_retry(kGET_ROLE, context, context.privs_role_name.c_str())) {
@@ -846,7 +919,7 @@ void get_db_objects_for_role(ClientContext context) {
   }
 }
 
-void get_db_object_privs(ClientContext context) {
+void get_db_object_privs(ClientContext& context) {
   context.role_names.clear();
   context.userPrivateRole = true;
   if (thrift_with_retry(kGET_ALL_ROLES, context, nullptr)) {
@@ -921,7 +994,7 @@ void get_db_object_privs(ClientContext context) {
   }
 }
 
-void set_license_key(ClientContext context, const std::string& token) {
+void set_license_key(ClientContext& context, const std::string& token) {
   context.license_key = token;
   if (thrift_with_retry(kSET_LICENSE_KEY, context, nullptr)) {
     for (auto claims : context.license_info.claims) {
@@ -934,7 +1007,7 @@ void set_license_key(ClientContext context, const std::string& token) {
   }
 }
 
-void get_license_claims(ClientContext context) {
+void get_license_claims(ClientContext& context) {
   if (thrift_with_retry(kGET_LICENSE_CLAIMS, context, nullptr)) {
     for (auto claims : context.license_info.claims) {
       std::vector<std::string> jwt;
@@ -1019,16 +1092,16 @@ int main(int argc, char** argv) {
     passwd = mapd_getpass();
   }
 
-  shared_ptr<TTransport> transport;
-  shared_ptr<TProtocol> protocol;
-  shared_ptr<TTransport> socket;
+  mapd::shared_ptr<TTransport> transport;
+  mapd::shared_ptr<TProtocol> protocol;
+  mapd::shared_ptr<TTransport> socket;
   if (http) {
-    transport = shared_ptr<TTransport>(new THttpClient(server_host, port, "/"));
-    protocol = shared_ptr<TProtocol>(new TJSONProtocol(transport));
+    transport = mapd::shared_ptr<TTransport>(new THttpClient(server_host, port, "/"));
+    protocol = mapd::shared_ptr<TProtocol>(new TJSONProtocol(transport));
   } else {
-    socket = shared_ptr<TTransport>(new TSocket(server_host, port));
-    transport = shared_ptr<TTransport>(new TBufferedTransport(socket));
-    protocol = shared_ptr<TProtocol>(new TBinaryProtocol(transport));
+    socket = mapd::shared_ptr<TTransport>(new TSocket(server_host, port));
+    transport = mapd::shared_ptr<TTransport>(new TBufferedTransport(socket));
+    protocol = mapd::shared_ptr<TProtocol>(new TBinaryProtocol(transport));
   }
   MapDClient c(protocol);
   ClientContext context(*transport, c);
@@ -1133,6 +1206,9 @@ int main(int argc, char** argv) {
           bool not_first = false;
           if (print_header) {
             for (auto p : context.query_return.row_set.row_desc) {
+              if (p.is_physical) {
+                // TODO(d): skip if we decide to suppress displaying physical columns
+              }
               if (not_first)
                 std::cout << delimiter;
               else
@@ -1144,6 +1220,9 @@ int main(int argc, char** argv) {
           for (size_t row_idx = 0; row_idx < row_count; ++row_idx) {
             const auto& col_desc = context.query_return.row_set.row_desc;
             for (size_t col_idx = 0; col_idx < col_desc.size(); ++col_idx) {
+              if (col_desc[col_idx].is_physical) {
+                // TODO(d): skip if we decide to suppress displaying physical columns
+              }
               if (col_idx) {
                 std::cout << delimiter;
               }
@@ -1222,19 +1301,18 @@ int main(int argc, char** argv) {
       } else {
         std::cout << "Cannot connect to MapD Server." << std::endl;
       }
-
     } else if (!strncmp(line, "\\status", 8)) {
       if (thrift_with_retry(kGET_SERVER_STATUS, context, nullptr)) {
         time_t t = (time_t)context.cluster_status[0].start_time;
         std::tm* tm_ptr = gmtime(&t);
         char buf[12] = {0};
         strftime(buf, 11, "%F", tm_ptr);
-        std::string server_version = context.cluster_status[0].version;
+        std::string agg_version = context.cluster_status[0].version;
 
         std::cout << "The Server Version Number  : " << context.cluster_status[0].version << std::endl;
         std::cout << "The Server Start Time      : " << buf << " : " << tm_ptr->tm_hour << ":" << tm_ptr->tm_min << ":"
                   << tm_ptr->tm_sec << std::endl;
-        std::cout << "The Server edition         : " << server_version << std::endl;
+        std::cout << "The Server edition         : " << agg_version << std::endl;
 
         if (context.cluster_status.size() > 1) {
           std::cout << "The Number of Leaves       : " << context.cluster_status.size() - 1 << std::endl;
@@ -1245,9 +1323,11 @@ int main(int argc, char** argv) {
             strftime(buf, 11, "%F", tm_ptr);
             std::cout << "--------------------------------------------------" << std::endl;
             std::cout << "Name of Leaf               : " << leaf->host_name << std::endl;
-            if (server_version.compare(leaf->version) != 0) {
+            if (agg_version != leaf->version) {
               std::cout << "The Leaf Version Number   : " << leaf->version << std::endl;
-              std::cerr << "Version number mismatch!" << std::endl;
+              std::cerr << "\033[31m*** Version number mismatch! ***\033[0m Please make sure All leaves, Aggregator "
+                           "and String Dictionary are running the same version of MapD."
+                        << std::endl;
             }
             std::cout << "The Leaf Start Time        : " << buf << " : " << tm_ptr->tm_hour << ":" << tm_ptr->tm_min
                       << ":" << tm_ptr->tm_sec << std::endl;
@@ -1259,7 +1339,14 @@ int main(int argc, char** argv) {
     } else if (!strncmp(line, "\\detect", 7)) {
       char* filepath = strtok(line + 8, " ");
       TCopyParams copy_params;
-      copy_params.delimiter = delimiter;
+      copy_params.delimiter = ",";
+      char* env;
+      if (nullptr != (env = getenv("AWS_REGION")))
+        copy_params.s3_region = env;
+      if (nullptr != (env = getenv("AWS_ACCESS_KEY_ID")))
+        copy_params.s3_access_key = env;
+      if (nullptr != (env = getenv("AWS_SECRET_ACCESS_KEY")))
+        copy_params.s3_secret_key = env;
       detect_table(filepath, copy_params, context);
     } else if (!strncmp(line, "\\historylen", 11)) {
       /* The "/historylen" command will change the history len. */
@@ -1325,6 +1412,7 @@ int main(int argc, char** argv) {
 	( "\\role_list", 2, RoleListCmd<>(context), "Usage: \\role_list <userName>")
 	( "\\roles", 1, RolesCmd<>(context))("\\set_license", 2, [&](Params const& p ) { set_license_key(context, p[1]); })
 	( "\\get_license", 1, [&](Params const&) { get_license_claims(context); })
+	( "\\status", 1, StatusCmd<>( context ), "Usage \\status" )
 	.is_resolved();
 
       if (resolution_status == false) {

@@ -194,7 +194,8 @@ class Catalog {
 
   std::list<const ColumnDescriptor*> getAllColumnMetadataForTable(const int tableId,
                                                                   const bool fetchSystemColumns,
-                                                                  const bool fetchVirtualColumns) const;
+                                                                  const bool fetchVirtualColumns,
+                                                                  const bool fetchPhysicalColumns) const;
 
   std::list<const TableDescriptor*> getAllTableMetadata() const;
   std::list<const FrontendViewDescriptor*> getAllFrontendViewMetadata() const;
@@ -217,6 +218,10 @@ class Catalog {
   static void set(const std::string& dbName, std::shared_ptr<Catalog> cat);
   static std::shared_ptr<Catalog> get(const std::string& dbName);
   static void remove(const std::string& dbName);
+
+  const ColumnDescriptor* getDeletedColumn(const TableDescriptor* td) const;
+
+  void setDeletedColumn(const TableDescriptor* td, const ColumnDescriptor* cd);
 
  protected:
   typedef std::map<std::string, TableDescriptor*> TableDescriptorMap;
@@ -266,7 +271,8 @@ class Catalog {
   void getAllColumnMetadataForTable(const TableDescriptor* td,
                                     std::list<const ColumnDescriptor*>& colDescs,
                                     const bool fetchSystemColumns,
-                                    const bool fetchVirtualColumns) const;
+                                    const bool fetchVirtualColumns,
+                                    const bool fetchPhysicalColumns) const;
   std::string calculateSHA1(const std::string& data);
   std::string generatePhysicalTableName(const std::string& logicalTableName, const int32_t& shardNumber);
 
@@ -296,6 +302,7 @@ class Catalog {
 
  private:
   static std::map<std::string, std::shared_ptr<Catalog>> mapd_cat_map_;
+  std::unordered_map<const TableDescriptor*, const ColumnDescriptor*> deletedColumnPerTable_;
 };
 
 /*
@@ -310,8 +317,6 @@ class SysCatalog {
             std::shared_ptr<Calcite> calcite,
             bool is_new_db,
             bool check_privileges);
-  void initDB();
-  void initObjectPrivileges();
   void createUser(const std::string& name, const std::string& passwd, bool issuper);
   void dropUser(const std::string& name);
   void alterUser(const int32_t userid, const std::string* passwd, bool* is_superp);
@@ -370,14 +375,17 @@ class SysCatalog {
   SysCatalog() {}
   virtual ~SysCatalog();
 
+  void initDB();
   void buildRoleMap();
   void buildUserRoleMap();
-  void migrateSysCatalogSchema();
+  void checkAndExecuteMigrations();
+  void createUserRoles();
+  void migratePrivileges();
+  void migratePrivileged_old();
   void dropUserRole(const std::string& userName);
 
   // Here go functions not wrapped into transactions (necessary for nested calls)
   void grantDefaultPrivilegesToRole_unsafe(const std::string& name, bool issuper);
-  void createDefaultMapdRoles_unsafe();
   void createRole_unsafe(const std::string& roleName, const bool& userPrivateRole = false);
   void dropRole_unsafe(const std::string& roleName);
   void grantRole_unsafe(const std::string& roleName, const std::string& userName);

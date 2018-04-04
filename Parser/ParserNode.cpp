@@ -54,6 +54,16 @@ bool g_fast_strcmp{true};
 using namespace Lock_Namespace;
 using Catalog_Namespace::SysCatalog;
 
+namespace Importer_NS {
+
+bool importGeoFromWkt(std::string& wkt,
+                      SQLTypeInfo& ti,
+                      std::vector<double>& coords,
+                      std::vector<int>& ring_sizes,
+                      std::vector<int>& poly_rings);
+
+}  // Importer_NS
+
 namespace Parser {
 
 std::shared_ptr<Analyzer::Expr> NullLiteral::analyze(const Catalog_Namespace::Catalog& catalog,
@@ -149,6 +159,43 @@ std::shared_ptr<Analyzer::Expr> UserLiteral::analyze(const Catalog_Namespace::Ca
                                                      TlistRefType allow_tlist_ref) const {
   throw std::runtime_error("USER literal not supported yet.");
   return nullptr;
+}
+
+std::shared_ptr<Analyzer::Expr> ArrayLiteral::analyze(const Catalog_Namespace::Catalog& catalog,
+                                                      Analyzer::Query& query,
+                                                      TlistRefType allow_tlist_ref) const {
+  SQLTypeInfo ti = SQLTypeInfo(kARRAY, true);
+  bool set_subtype = true;
+  std::list<std::shared_ptr<Analyzer::Expr>> value_exprs;
+  for (auto& p : value_list) {
+    auto e = p->analyze(catalog, query, allow_tlist_ref);
+    CHECK(e);
+    auto subtype = e->get_type_info().get_type();
+    if (set_subtype) {
+      ti.set_subtype(subtype);
+      set_subtype = false;
+    } else {
+      if (ti.get_subtype() != subtype)
+        throw std::runtime_error("ARRAY literals should be of the same type.");
+    }
+    value_exprs.push_back(e);
+  }
+  std::shared_ptr<Analyzer::Expr> result = makeExpr<Analyzer::Constant>(ti, false, value_exprs);
+  return result;
+}
+
+std::string ArrayLiteral::to_string() const {
+  std::string str = "{";
+  bool notfirst = false;
+  for (auto& p : value_list) {
+    if (notfirst)
+      str += ", ";
+    else
+      notfirst = true;
+    str += p->to_string();
+  }
+  str += "}";
+  return str;
 }
 
 std::shared_ptr<Analyzer::Expr> OperExpr::analyze(const Catalog_Namespace::Catalog& catalog,
@@ -1503,7 +1550,8 @@ void InsertStmt::analyze(const Catalog_Namespace::Catalog& catalog, Analyzer::Qu
   query.set_result_table_id(td->tableId);
   std::list<int> result_col_list;
   if (column_list.empty()) {
-    const std::list<const ColumnDescriptor*> all_cols = catalog.getAllColumnMetadataForTable(td->tableId, false, false);
+    const std::list<const ColumnDescriptor*> all_cols =
+        catalog.getAllColumnMetadataForTable(td->tableId, false, false, true);
     for (auto cd : all_cols) {
       result_col_list.push_back(cd->columnId);
     }
@@ -1514,7 +1562,7 @@ void InsertStmt::analyze(const Catalog_Namespace::Catalog& catalog, Analyzer::Qu
         throw std::runtime_error("Column " + *c + " does not exist.");
       result_col_list.push_back(cd->columnId);
     }
-    if (catalog.getAllColumnMetadataForTable(td->tableId, false, false).size() != result_col_list.size())
+    if (catalog.getAllColumnMetadataForTable(td->tableId, false, false, true).size() != result_col_list.size())
       throw std::runtime_error("Insert into a subset of columns is not supported yet.");
   }
   query.set_result_col_list(result_col_list);
@@ -1523,7 +1571,10 @@ void InsertStmt::analyze(const Catalog_Namespace::Catalog& catalog, Analyzer::Qu
 void InsertValuesStmt::analyze(const Catalog_Namespace::Catalog& catalog, Analyzer::Query& query) const {
   InsertStmt::analyze(catalog, query);
   std::vector<std::shared_ptr<Analyzer::TargetEntry>>& tlist = query.get_targetlist_nonconst();
-  if (query.get_result_col_list().size() != value_list.size())
+  const auto tableId = query.get_result_table_id();
+  const std::list<const ColumnDescriptor*> non_phys_cols =
+      catalog.getAllColumnMetadataForTable(tableId, false, false, false);
+  if (non_phys_cols.size() != value_list.size())
     throw std::runtime_error("Insert has more target columns than expressions.");
   std::list<int>::const_iterator it = query.get_result_col_list().begin();
   for (auto& v : value_list) {
@@ -1538,6 +1589,91 @@ void InsertValuesStmt::analyze(const Catalog_Namespace::Catalog& catalog, Analyz
     e = e->add_cast(cd->columnType);
     tlist.emplace_back(new Analyzer::TargetEntry("", e, false));
     ++it;
+
+    const auto& col_ti = cd->columnType;
+    if (col_ti.get_physical_cols() > 0) {
+      CHECK(cd->columnType.is_geometry());
+      auto c = std::dynamic_pointer_cast<Analyzer::Constant>(e);
+      CHECK(c);
+      std::vector<double> coords;
+      std::vector<int> ring_sizes;
+      std::vector<int> poly_rings;
+      int render_group = 0;  // @TODO simon.eves where to get render_group from in this context?!
+      SQLTypeInfo import_ti;
+      if (!Importer_NS::importGeoFromWkt(*c->get_constval().stringval, import_ti, coords, ring_sizes, poly_rings)) {
+        throw std::runtime_error("Cannot read geometry to insert into column " + cd->columnName);
+      }
+      if (cd->columnType.get_type() != import_ti.get_type()) {
+        throw std::runtime_error("Imported geometry doesn't match the type of column " + cd->columnName);
+      }
+      // TODO: check if import SRID matches columns SRID, may need to transform before inserting
+
+      const ColumnDescriptor* cd_coords = catalog.getMetadataForColumn(query.get_result_table_id(), cd->columnId + 1);
+      CHECK(cd_coords);
+      CHECK_EQ(cd_coords->columnType.get_type(), kARRAY);
+      CHECK_EQ(cd_coords->columnType.get_subtype(), kDOUBLE);
+      std::list<std::shared_ptr<Analyzer::Expr>> value_exprs;
+      for (auto c : coords) {
+        Datum d;
+        d.doubleval = c;
+        auto e = makeExpr<Analyzer::Constant>(kDOUBLE, false, d);
+        value_exprs.push_back(e);
+      }
+      tlist.emplace_back(new Analyzer::TargetEntry(
+          "", makeExpr<Analyzer::Constant>(cd_coords->columnType, false, value_exprs), false));
+      ++it;
+
+      if (cd->columnType.get_type() == kPOLYGON || cd->columnType.get_type() == kMULTIPOLYGON) {
+        // Put ring sizes array into separate physical column
+        const ColumnDescriptor* cd_ring_sizes =
+            catalog.getMetadataForColumn(query.get_result_table_id(), cd->columnId + 2);
+        CHECK(cd_ring_sizes);
+        CHECK_EQ(cd_ring_sizes->columnType.get_type(), kARRAY);
+        CHECK_EQ(cd_ring_sizes->columnType.get_subtype(), kINT);
+        std::list<std::shared_ptr<Analyzer::Expr>> value_exprs;
+        for (auto c : ring_sizes) {
+          Datum d;
+          d.intval = c;
+          auto e = makeExpr<Analyzer::Constant>(kINT, false, d);
+          value_exprs.push_back(e);
+        }
+        tlist.emplace_back(new Analyzer::TargetEntry(
+            "", makeExpr<Analyzer::Constant>(cd_ring_sizes->columnType, false, value_exprs), false));
+        ++it;
+        int renderGroupColOffset = 3;
+
+        if (cd->columnType.get_type() == kMULTIPOLYGON) {
+          // Put poly_rings array into separate physical column
+          const ColumnDescriptor* cd_poly_rings =
+              catalog.getMetadataForColumn(query.get_result_table_id(), cd->columnId + 3);
+          CHECK(cd_poly_rings);
+          CHECK_EQ(cd_poly_rings->columnType.get_type(), kARRAY);
+          CHECK_EQ(cd_poly_rings->columnType.get_subtype(), kINT);
+          std::list<std::shared_ptr<Analyzer::Expr>> value_exprs;
+          for (auto c : poly_rings) {
+            Datum d;
+            d.intval = c;
+            auto e = makeExpr<Analyzer::Constant>(kINT, false, d);
+            value_exprs.push_back(e);
+          }
+          tlist.emplace_back(new Analyzer::TargetEntry(
+              "", makeExpr<Analyzer::Constant>(cd_poly_rings->columnType, false, value_exprs), false));
+          ++it;
+          renderGroupColOffset = 4;
+        }
+
+        // Put render group into separate physical column
+        const ColumnDescriptor* cd_render_group =
+            catalog.getMetadataForColumn(query.get_result_table_id(), cd->columnId + renderGroupColOffset);
+        CHECK(cd_render_group);
+        CHECK_EQ(cd_render_group->columnType.get_type(), kINT);
+        Datum d;
+        d.intval = render_group;
+        tlist.emplace_back(
+            new Analyzer::TargetEntry("", makeExpr<Analyzer::Constant>(cd_render_group->columnType, false, d), false));
+        ++it;
+      }
+    }
   }
 }
 
@@ -1580,6 +1716,12 @@ void SQLType::check_type() {
         else
           throw std::runtime_error("Only TIME(0) is supported now.");
       }
+      break;
+    case kPOINT:
+    case kLINESTRING:
+    case kPOLYGON:
+    case kMULTIPOLYGON:
+      // Storing SRID in param1
       break;
     default:
       param1 = 0;
@@ -2364,6 +2506,17 @@ void CopyTableStmt::execute(
         else if (str_literal->get_stringval()->length() != 1)
           throw std::runtime_error("Array Delimiter must be a single character string.");
         copy_params.array_delim = (*str_literal->get_stringval())[0];
+      } else if (boost::iequals(*p->get_name(), "lonlat")) {
+        const StringLiteral* str_literal = dynamic_cast<const StringLiteral*>(p->get_value());
+        if (str_literal == nullptr)
+          throw std::runtime_error("Lonlat option must be a boolean.");
+        const std::string* s = str_literal->get_stringval();
+        if (*s == "t" || *s == "true" || *s == "T" || *s == "True")
+          copy_params.lonlat = true;
+        else if (*s == "f" || *s == "false" || *s == "F" || *s == "False")
+          copy_params.lonlat = false;
+        else
+          throw std::runtime_error("Invalid string for boolean " + *s);
       } else
         throw std::runtime_error("Invalid option for COPY: " + *p->get_name());
     }
@@ -2412,11 +2565,6 @@ void CreateRoleStmt::execute(const Catalog_Namespace::SessionInfo& session) {
   const auto& currentUser = session.get_currentUser();
   if (!currentUser.isSuper) {
     throw std::runtime_error("CREATE ROLE " + get_role() + " failed. It can only be executed by super user.");
-  }
-  const auto role_name = boost::to_lower_copy<std::string>(get_role());
-  if (!role_name.compare(MAPD_DEFAULT_ROOT_USER_ROLE) || !role_name.compare(MAPD_DEFAULT_USER_ROLE)) {
-    throw std::runtime_error("CREATE ROLE " + get_role() +
-                             " failed because this role name is reserved and can't be used.");
   }
   SysCatalog::instance().createRole(get_role());
 }

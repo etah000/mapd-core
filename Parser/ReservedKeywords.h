@@ -24,6 +24,7 @@
 static std::set<std::string> reserved_keywords{
     "ROWID",  // MapD internal
     "AMMSC",  // MapD legacy
+    "ARRAY",
     "ASC",
     "CHAR_LENGTH",
     "CONTINUE",
@@ -167,6 +168,8 @@ static std::set<std::string> reserved_keywords{
     "FULL",
     "FUNCTION",
     "FUSION",
+    "GEOGRAPHY",
+    "GEOMETRY",
     "GET",
     "GLOBAL",
     "GRANT",
@@ -199,6 +202,7 @@ static std::set<std::string> reserved_keywords{
     "LEFT",
     "LIKE",
     "LIMIT",
+    "LINESTRING",
     "LN",
     "LOCAL",
     "LOCALTIME",
@@ -215,6 +219,7 @@ static std::set<std::string> reserved_keywords{
     "MODIFIES",
     "MODULE",
     "MONTH",
+    "MULTIPOLYGON",
     "MULTISET",
     "NATIONAL",
     "NATURAL",
@@ -248,6 +253,8 @@ static std::set<std::string> reserved_keywords{
     "PERCENTILE_CONT",
     "PERCENTILE_DISC",
     "PERCENT_RANK",
+    "POINT",
+    "POLYGON",
     "POSITION",
     "POWER",
     "PRECISION",

@@ -24,6 +24,7 @@
 #include <aws/s3/model/ListObjectsRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <fstream>
+#include <memory>
 
 int S3Archive::awsapi_count;
 std::mutex S3Archive::awsapi_mtx;
@@ -59,33 +60,37 @@ void S3Archive::init_for_read() {
     if (!s3_access_key.empty() && !s3_secret_key.empty())
       s3_client.reset(new Aws::S3::S3Client(Aws::Auth::AWSCredentials(s3_access_key, s3_secret_key), s3_config));
     else
-      s3_client.reset(new Aws::S3::S3Client(s3_config));
+      s3_client.reset(new Aws::S3::S3Client(std::make_shared<Aws::Auth::AnonymousAWSCredentialsProvider>(), s3_config));
 
     auto list_objects_outcome = s3_client->ListObjects(objects_request);
-    if (!list_objects_outcome.IsSuccess())
-      throw std::runtime_error("failed to list objects of s3 url '" + url + "': " +
-                               list_objects_outcome.GetError().GetExceptionName() + ": " +
-                               list_objects_outcome.GetError().GetMessage());
+    if (list_objects_outcome.IsSuccess()) {
+      // pass only object keys to next stage, which may be Importer::import_parquet,
+      // Importer::import_compressed or else, depending on copy_params (eg. .is_parquet)
+      auto object_list = list_objects_outcome.GetResult().GetContents();
+      if (0 == object_list.size())
+        throw std::runtime_error("no object was found with s3 url '" + url + "'");
 
-    // pass only object keys to next stage, which may be Importer::import_parquet,
-    // Importer::import_compressed or else, depending on copy_params (eg. .is_parquet)
-    auto object_list = list_objects_outcome.GetResult().GetContents();
-    if (0 == object_list.size())
-      throw std::runtime_error("no object was found with s3 url '" + url + "'");
+      LOG(INFO) << "Found " << object_list.size() << " objects with url '" + url + "':";
+      for (auto const& obj : object_list) {
+        std::string objkey = obj.GetKey().c_str();
+        LOG(INFO) << "\t" << objkey << " (size = " << obj.GetSize() << " bytes)";
+        // skip _SUCCESS and keys with trailing / or basename with heading '.'
+        boost::filesystem::path path{objkey};
+        if (0 == obj.GetSize())
+          continue;
+        if ('/' == objkey.back())
+          continue;
+        if ('.' == path.filename().string().front())
+          continue;
+        objkeys.push_back(objkey);
+      }
+    } else {
+      // could not ListObject
+      // could be the object is there but we do not have listObject Privilege
+      // We can treat it as a specific object, so should try to parse it and pass to getObject as a singleton
 
-    LOG(INFO) << "Found " << object_list.size() << " objects with url '" + url + "':";
-    for (auto const& obj : object_list) {
-      std::string objkey = obj.GetKey().c_str();
-      LOG(INFO) << "\t" << objkey << " (size = " << obj.GetSize() << " bytes)";
-      // skip _SUCCESS and keys with trailing / or basename with heading '.'
-      boost::filesystem::path path{objkey};
-      if (0 == obj.GetSize())
-        continue;
-      if ('/' == objkey.back())
-        continue;
-      if ('.' == path.filename().string().front())
-        continue;
-      objkeys.push_back(objkey);
+      objkeys.push_back(prefix_name);
+
     }
   } catch (...) {
     throw;
@@ -100,7 +105,7 @@ void S3Archive::init_for_read() {
 //
 // likely in the future there will be other file types that need to
 // land entirely to be imported... (avro?)
-const std::string S3Archive::land(const std::string& objkey, std::exception_ptr& teptr) {
+const std::string S3Archive::land(const std::string& objkey, std::exception_ptr& teptr, const bool for_detection) {
   // 7z file needs entire landing; other file types use a named pipe
   static std::atomic<int64_t> seqno(((int64_t)getpid() << 32) | time(0));
   // need a dummy ext b/c no-ext now indicate plain_text
@@ -113,22 +118,57 @@ const std::string S3Archive::land(const std::string& objkey, std::exception_ptr&
     if (mkfifo(file_path.c_str(), 0660) < 0)
       throw std::runtime_error("failed to create named pipe '" + file_path + "': " + strerror(errno));
 
-  // streaming means asynch
-  auto th_writer = std::thread([=, &teptr]() {
-    LOG(INFO) << "download s3://" << bucket_name << "/" << objkey << " to " << (use_pipe ? "pipe " : "file ")
-              << file_path;
-    try {
-      Aws::S3::Model::GetObjectRequest object_request;
-      object_request.WithBucket(bucket_name).WithKey(objkey);
-      auto get_object_outcome = s3_client->GetObject(object_request);
-      if (!get_object_outcome.IsSuccess())
-        throw std::runtime_error("failed to get object '" + objkey + "' of s3 url '" + url + "': " +
-                                 get_object_outcome.GetError().GetExceptionName() + ": " +
-                                 get_object_outcome.GetError().GetMessage());
+  /*
+    Here is the background info that makes the thread interaction here a bit subtle:
+    1) We need two threading modes for the `th_writer` thread below:
+       a) synchronous mode to land .7z files or any file that must land fully as a local file
+          before it can be processed by libarchive.
+       b) asynchronous mode to land a file that can be processed by libarchive as a stream.
+          With this mode, the file is streamed into a temporary named pipe.
+    2) Cooperating with the `th_writer` thread is the `th_pipe_writer` thread in Importer.cpp.
+       For mode b), th_pipe_writer thread reads data from the named pipe written by th_writer.
+       Before it reads, it needs to open the pipe. It will be blocked indefinitely (hang) if
+       th_writer exits from any error before th_pipe_writer opens the pipe.
+    3) AWS S3 client s3_client->GetObject returns an 'object' rather than a pointer to the object.
+       That makes it hard to use smart pointer for RAII. Calling s3_client->GetObject in th_writer
+       body appears to the immediate approach.
+    4) If s3_client->GetObject were called inside th_writer and th_writer is in async mode, a
+       tragic scenario is that th_writer receives an error (eg. bad credentials) from AWS S3 server
+       then quits when th_pipe_writer has proceeded to open the named pipe and get blocked (hangs).
 
+    So a viable approach is to move s3_client->GetObject out of th_writer body but *move* the
+    `object outcome` into th_writer body. This way we can better assure any error of s3_client->GetObject
+    will be thrown immediately to upstream (ie. th_pipe_writer) and `object outcome` will be released
+    later after the object is landed.
+   */
+  Aws::S3::Model::GetObjectRequest object_request;
+  object_request.WithBucket(bucket_name).WithKey(objkey);
+
+  // set a download byte range (max 10mb) to avoid getting stuck on detecting big s3 files
+  if (use_pipe && for_detection)
+    object_request.SetRange("bytes=0-10000000");
+
+  auto get_object_outcome = s3_client->GetObject(object_request);
+  if (!get_object_outcome.IsSuccess())
+    throw std::runtime_error("failed to get object '" + objkey + "' of s3 url '" + url + "': " +
+                             get_object_outcome.GetError().GetExceptionName() + ": " +
+                             get_object_outcome.GetError().GetMessage());
+
+  // streaming means asynch
+  std::atomic<bool> is_get_object_outcome_moved(false);
+  // fix a race between S3Archive::land and S3Archive::~S3Archive on S3Archive itself
+  auto& bucket_name = this->bucket_name;
+  auto th_writer = std::thread([=, &teptr, &get_object_outcome, &is_get_object_outcome_moved]() {
+    try {
+      LOG(INFO) << "downloading s3://" << bucket_name << "/" << objkey << " to " << (use_pipe ? "pipe " : "file ")
+                << file_path << "...";
+      auto get_object_outcome_moved = decltype(get_object_outcome)(std::move(get_object_outcome));
+      is_get_object_outcome_moved = true;
       Aws::OFStream local_file;
       local_file.open(file_path.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
-      local_file << get_object_outcome.GetResult().GetBody().rdbuf();
+      local_file << get_object_outcome_moved.GetResult().GetBody().rdbuf();
+      LOG(INFO) << "downloaded s3://" << bucket_name << "/" << objkey << " to " << (use_pipe ? "pipe " : "file ")
+                << file_path << ".";
     } catch (...) {
       // need this way to capture any exception occurring when
       // this thread runs as a disjoint asynchronous thread
@@ -139,10 +179,21 @@ const std::string S3Archive::land(const std::string& objkey, std::exception_ptr&
     }
   });
 
-  if (use_pipe)
+  if (use_pipe) {
+    // in async (pipe) case, this function needs to wait for get_object_outcome
+    // to be moved before it can exits; otherwise, the move() above will boom!!
+    while (!is_get_object_outcome_moved)
+      std::this_thread::yield();
     th_writer.detach();
-  else
-    th_writer.join();
+    // after the thread is detached, any exception happening to rdbuf()
+    // is passed to the upstream Importer th_pipe_writer thread via teptr.
+  } else {
+    try {
+      th_writer.join();
+    } catch (...) {
+      throw;
+    }
+  }
 
   file_paths.insert(std::pair<const std::string, const std::string>(objkey, file_path));
   return file_path;

@@ -2176,6 +2176,17 @@ TEST(Select, Time) {
         "HAVING d IS NOT NULL;",
         dt);
     check_one_date_trunc_group(*one_row, 1388534400);
+    ASSERT_EQ(0,
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM test where "
+                                        "DATE '2017-05-30' = DATE '2017-05-31' OR "
+                                        "DATE '2017-05-31' = DATE '2017-05-30';",
+                                        dt)));
+    ASSERT_EQ(
+        2 * g_num_rows,
+        v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM test where "
+                                  "EXTRACT(DOW from TIMESTAMPADD(HOUR, -5, TIMESTAMP '2017-05-31 1:11:11')) = 1 OR "
+                                  "EXTRACT(DOW from TIMESTAMPADD(HOUR, -5, TIMESTAMP '2017-05-31 1:11:11')) = 2;",
+                                  dt)));
   }
 }
 
@@ -2576,7 +2587,7 @@ void import_array_test(const std::string& table_name) {
   CHECK(td);
   Importer_NS::Loader loader(cat, td);
   std::vector<std::unique_ptr<Importer_NS::TypedImportBuffer>> import_buffers;
-  const auto col_descs = cat.getAllColumnMetadataForTable(td->tableId, false, false);
+  const auto col_descs = cat.getAllColumnMetadataForTable(td->tableId, false, false, false);
   for (const auto cd : col_descs) {
     import_buffers.emplace_back(new Importer_NS::TypedImportBuffer(
         cd,
@@ -2874,6 +2885,28 @@ void import_dept_table() {
     const std::string insert_query{"INSERT INTO dept VALUES(50, 'QA');"};
     run_multiple_agg(insert_query, ExecutorDeviceType::CPU);
     g_sqlite_comparator.query(insert_query);
+  }
+}
+
+void import_geospatial_test() {
+  const std::string geospatial_test("DROP TABLE IF EXISTS geospatial_test;");
+  run_ddl_statement(geospatial_test);
+  run_ddl_statement(
+      "CREATE TABLE geospatial_test ("
+      "p POINT, l LINESTRING, poly POLYGON, mpoly MULTIPOLYGON, "
+      "gp GEOMETRY(POINT), gp4326 GEOMETRY(POINT,4326), gp900913 GEOMETRY(POINT,900913)"
+      ") WITH (fragment_size=2);");
+  for (ssize_t i = 0; i < g_num_rows; ++i) {
+    const std::string point{"'POINT(" + std::to_string(i) + " " + std::to_string(i) + ")'"};
+    const std::string linestring{
+        "'LINESTRING(" + std::to_string(i) + " 0, " + std::to_string(2 * i) + " " + std::to_string(2 * i) +
+        ((i % 2) ? (", " + std::to_string(2 * i + 1) + " " + std::to_string(2 * i + 1)) : "") + ")'"};
+    const std::string poly{"'POLYGON((0 0, " + std::to_string(i + 1) + " 0, 0 " + std::to_string(i + 1) + ", 0 0))'"};
+    const std::string mpoly{"'MULTIPOLYGON(((0 0, " + std::to_string(i + 1) + " 0, 0 " + std::to_string(i + 1) +
+                            ", 0 0)))'"};
+    const std::string insert_query{"INSERT INTO geospatial_test VALUES(" + point + ", " + linestring + ", " + poly +
+                                   ", " + mpoly + ", " + point + ", " + point + ", " + point + ");"};
+    run_multiple_agg(insert_query, ExecutorDeviceType::CPU);
   }
 }
 
@@ -3913,6 +3946,338 @@ TEST(Truncate, Count) {
   run_ddl_statement("drop table trunc_test;");
 }
 
+TEST(Select, Deleted) {
+  for (auto dt : {ExecutorDeviceType::CPU, ExecutorDeviceType::GPU}) {
+    SKIP_NO_GPU();
+    c("SELECT COUNT(*) FROM test_inner_deleted;", dt);
+    c("SELECT test.x, test_inner_deleted.x FROM test LEFT JOIN test_inner_deleted ON test.x <> test_inner_deleted.x "
+      "ORDER BY test.x ASC;",
+      dt);
+    c("SELECT test.x, test_inner_deleted.x FROM test JOIN test_inner_deleted ON test.x <> test_inner_deleted.x ORDER "
+      "BY test.x ASC;",
+      dt);
+    c("SELECT test.x, test_inner_deleted.x FROM test LEFT JOIN test_inner_deleted ON test.x = test_inner_deleted.x "
+      "ORDER BY test.x ASC;",
+      dt);
+    c("SELECT test.x, test_inner_deleted.x FROM test JOIN test_inner_deleted ON test.x = test_inner_deleted.x ORDER BY "
+      "test.x ASC;",
+      dt);
+  }
+}
+
+TEST(Select, GeoSpatial) {
+  for (auto dt : {ExecutorDeviceType::CPU, ExecutorDeviceType::GPU}) {
+    SKIP_NO_GPU();
+    ASSERT_EQ(static_cast<int64_t>(g_num_rows),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Distance(p,p) < 0.1;", dt)));
+    ASSERT_EQ(static_cast<int64_t>(g_num_rows),
+              v<int64_t>(run_simple_agg(
+                  "SELECT COUNT(*) FROM geospatial_test WHERE ST_Distance('POINT(0 0)', p) < 100.0;", dt)));
+    ASSERT_EQ(
+        static_cast<int64_t>(7),
+        v<int64_t>(run_simple_agg(
+            "SELECT COUNT(*) FROM geospatial_test WHERE ST_Distance(ST_GeomFromText('POINT(0 0)'), p) < 9;", dt)));
+    ASSERT_EQ(static_cast<int64_t>(5),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Distance(p,l) < 2.0;", dt)));
+    ASSERT_EQ(static_cast<int64_t>(1),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test "
+                                        "WHERE ST_Distance('LINESTRING(-1 0, 0 1)', p) < 0.8;",
+                                        dt)));
+    ASSERT_EQ(static_cast<int64_t>(2),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test "
+                                        "WHERE ST_Distance('LINESTRING(-1 0, 0 1)', p) < 1.1;",
+                                        dt)));
+    ASSERT_EQ(static_cast<int64_t>(3),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test "
+                                        "WHERE ST_Distance(p, 'LINESTRING(-1 0, 0 1)') < 2.5;",
+                                        dt)));
+    ASSERT_NEAR(static_cast<double>(2.0),
+                v<double>(run_simple_agg("SELECT ST_Distance('LINESTRING(-2 2, 2 2)', 'LINESTRING(4 2, 4 3)') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.01));
+    ASSERT_NEAR(
+        static_cast<double>(0.0),
+        v<double>(run_simple_agg("SELECT ST_Distance('LINESTRING(-2 2, 2 2, 2 0)', 'LINESTRING(4 0, 0 -4, -4 0, 0 4)') "
+                                 "from geospatial_test limit 1;",
+                                 dt)),
+        static_cast<double>(0.01));
+    ASSERT_NEAR(
+        static_cast<double>(0.31),
+        v<double>(run_simple_agg("SELECT ST_Distance('LINESTRING(-2 2, 2 2, 2 0)', 'LINESTRING(4 0, 0 -4, -4 0, 0 5)') "
+                                 "from geospatial_test limit 1;",
+                                 dt)),
+        static_cast<double>(0.01));
+    ASSERT_NEAR(static_cast<double>(3.0),
+                v<double>(run_simple_agg("SELECT ST_Distance(ST_GeomFromText('POINT(5 -1)'),"
+                                         "ST_GeomFromText('POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2))')) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.01));
+    ASSERT_NEAR(static_cast<double>(0.0),
+                v<double>(run_simple_agg("SELECT ST_Distance(ST_GeomFromText("
+                                         "'POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2))'), "
+                                         "ST_GeomFromText('POINT(0.5 0.5)')) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.01));
+    ASSERT_NEAR(static_cast<double>(0.5),
+                v<double>(run_simple_agg("SELECT ST_Distance(ST_GeomFromText("
+                                         "'POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2), (1 1, -1 1, -1 -1, 1 -1, 1 1))'), "
+                                         "ST_GeomFromText('POINT(0.5 0.5)')) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.01));
+    ASSERT_NEAR(
+        static_cast<double>(0.0),
+        v<double>(run_simple_agg("SELECT ST_Distance(ST_GeomFromText("
+                                 "'POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2))'), "
+                                 "ST_GeomFromText('LINESTRING(0.5 0.5, 0.7 0.75, -0.3 -0.3, -0.82 0.12, 0.3 0.64)')) "
+                                 "from geospatial_test limit 1;",
+                                 dt)),
+        static_cast<double>(0.01));
+    ASSERT_NEAR(
+        static_cast<double>(0.18),
+        v<double>(run_simple_agg("SELECT ST_Distance(ST_GeomFromText("
+                                 "'POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2), (1 1, -1 1, -1 -1, 1 -1, 1 1))'), "
+                                 "ST_GeomFromText('LINESTRING(0.5 0.5, 0.7 0.75, -0.3 -0.3, -0.82 0.12, 0.3 0.64)')) "
+                                 "from geospatial_test limit 1;",
+                                 dt)),
+        static_cast<double>(0.01));
+    ASSERT_NEAR(static_cast<double>(0.0),
+                v<double>(run_simple_agg("SELECT ST_Distance("
+                                         "'POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2))', "
+                                         "'POLYGON((0.5 0.5, -0.5 0.5, -0.5 -0.5, 0.5 -0.5, 0.5 0.5))') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.01));
+    ASSERT_NEAR(static_cast<double>(0.5),
+                v<double>(run_simple_agg("SELECT ST_Distance("
+                                         "'POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2), (1 1, -1 1, -1 -1, 1 -1, 1 1))', "
+                                         "'POLYGON((0.5 0.5, -0.5 0.5, -0.5 -0.5, 0.5 -0.5, 0.5 0.5))') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.01));
+    ASSERT_NEAR(static_cast<double>(2.0),
+                v<double>(run_simple_agg("SELECT ST_Distance("
+                                         "'POLYGON((2 2, -2 2, -2 -2, 2 -2, 2 2), (1 1, -1 1, -1 -1, 1 -1, 1 1))', "
+                                         "'POLYGON((4 2, 5 2, 5 3, 4 3, 4 2))') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.01));
+    ASSERT_NEAR(
+        static_cast<double>(2.0),
+        v<double>(run_simple_agg("SELECT ST_Distance("
+                                 "'MULTIPOLYGON(((2 2, -2 2, -2 -2, 2 -2, 2 2), (1 1, -1 1, -1 -1, 1 -1, 1 1)))', "
+                                 "'POINT(4 2)') "
+                                 "from geospatial_test limit 1;",
+                                 dt)),
+        static_cast<double>(0.01));
+
+    // Geodesic distance between Paris and LA: ~9105km
+    ASSERT_NEAR(static_cast<double>(9105643.0),
+                v<double>(run_simple_agg("SELECT ST_Distance(ST_GeomFromText('POINT(-118.4079 33.9434)', 4326), "
+                                         "ST_GeomFromText('POINT(2.5559 49.0083)', 4326)) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(10000.0));
+    // Cartesian distance between Paris and LA calculated from wgs84 degrees
+    ASSERT_NEAR(static_cast<double>(121.89),
+                v<double>(run_simple_agg("SELECT ST_Distance('POINT(-118.4079 33.9434)', 'POINT(2.5559 49.0083)') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(1.0));
+    // Cartesian distance between Paris and LA wgs84 coords transformed to web merc
+    ASSERT_NEAR(static_cast<double>(13653148.0),
+                v<double>(run_simple_agg("SELECT ST_Distance("
+                                         "ST_Transform(ST_GeomFromText('POINT(-118.4079 33.9434)', 4326), 900913), "
+                                         "ST_Transform(ST_GeomFromText('POINT(2.5559 49.0083)', 4326), 900913)) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(10000.0));
+
+    ASSERT_EQ(static_cast<int64_t>(g_num_rows),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Contains(p,p);", dt)));
+    ASSERT_EQ(
+        static_cast<int64_t>(1),
+        v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Contains('POINT(0 0)', p);", dt)));
+    ASSERT_EQ(
+        static_cast<int64_t>(1),
+        v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Contains('POINT(0 0)', l);", dt)));
+    ASSERT_EQ(static_cast<int64_t>(1),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Contains(p,l);", dt)));
+    ASSERT_EQ(static_cast<int64_t>(1),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Contains(l,p);", dt)));
+
+    ASSERT_EQ(static_cast<int64_t>(0),
+              v<int64_t>(
+                  run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE ST_Contains(poly, 'POINT(-1 -1)');", dt)));
+    ASSERT_EQ(static_cast<int64_t>(g_num_rows),
+              v<int64_t>(run_simple_agg(
+                  "SELECT COUNT(*) FROM geospatial_test WHERE ST_Contains(poly, 'POINT(0.1 0.1)');", dt)));
+    ASSERT_EQ(static_cast<int64_t>(1),  // polygon containing a point
+              v<int64_t>(run_simple_agg("SELECT ST_Contains("
+                                        "ST_GeomFromText('POLYGON((2 0, 0 2, -2 0, 0 -2, 2 0))'), "
+                                        "ST_GeomFromText('POINT(0 0)')) FROM geospatial_test limit 1;",
+                                        dt)));
+    ASSERT_EQ(static_cast<int64_t>(0),  // same polygon but with a hole in the middle that the point falls into
+              v<int64_t>(run_simple_agg("SELECT ST_Contains("
+                                        "'POLYGON((2 0, 0 2, -2 0, 0 -2, 2 0),(1 0, 0 1, -1 0, 0 -1, 1 0))', "
+                                        "'POINT(0.1 0.1)') FROM geospatial_test limit 1;",
+                                        dt)));
+    ASSERT_EQ(static_cast<int64_t>(1),  // back to true if we combine the holed polygon with one more in a multipolygon
+              v<int64_t>(run_simple_agg("SELECT ST_Contains("
+                                        "'MULTIPOLYGON(((2 0, 0 2, -2 0, 0 -2, 2 0),(1 0, 0 1, -1 0, 0 -1, 1 0)), "
+                                        "((2 0, 0 2, -2 0, 0 -2, 1 -2, 2 -1)))', "
+                                        "'POINT(0.1 0.1)') FROM geospatial_test limit 1;",
+                                        dt)));
+
+    // Coord accessors
+    ASSERT_NEAR(static_cast<double>(-118.4079),
+                v<double>(run_simple_agg("SELECT ST_X('POINT(-118.4079 33.9434)') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.0));
+    ASSERT_NEAR(static_cast<double>(33.9434),
+                v<double>(run_simple_agg("SELECT ST_Y(ST_GeomFromText('POINT(-118.4079 33.9434)', 4326)) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.0));
+    ASSERT_NEAR(static_cast<double>(4021204.558),
+                v<double>(run_simple_agg("SELECT ST_Y(ST_Transform("
+                                         "ST_GeomFromText('POINT(-118.4079 33.9434)', 4326), 900913)) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.001));
+
+    ASSERT_NEAR(static_cast<double>(-118.4079),
+                v<double>(run_simple_agg("SELECT ST_XMax('POINT(-118.4079 33.9434)') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.0));
+    ASSERT_NEAR(static_cast<double>(3960189.382),
+                v<double>(run_simple_agg("SELECT ST_YMax('MULTIPOLYGON "
+                                         "(((-13201820.2402333 3957482.147359,-13189665.9329505 3960189.38265416,"
+                                         "-13176924.0813953 3949756.56479131)))') "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.001));
+    ASSERT_NEAR(static_cast<double>(4021204.558),
+                v<double>(run_simple_agg("SELECT ST_YMin(ST_Transform(ST_GeomFromText("
+                                         "'LINESTRING (-118.4079 33.9434, 2.5559 49.0083)', 4326), 900913)) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.001));
+
+    // Point accessors, Linestring indexing
+    ASSERT_EQ(static_cast<double>(34.274647),
+              v<double>(run_simple_agg("SELECT ST_Y(ST_PointN(ST_GeomFromText('LINESTRING(-118.243683 34.052235, "
+                                       "-119.229034 34.274647, -119.698189 34.420830, -121.898460 36.603954, "
+                                       "-122.446747 37.733795)', 4326), 2)) "
+                                       "from geospatial_test limit 1;",
+                                       dt)));
+    ASSERT_EQ(static_cast<double>(-122.446747),
+              v<double>(run_simple_agg("SELECT ST_X(ST_EndPoint(ST_GeomFromText('LINESTRING(-118.243683 34.052235, "
+                                       "-119.229034 34.274647, -119.698189 34.420830, -121.898460 36.603954, "
+                                       "-122.446747 37.733795)', 4326))) "
+                                       "from geospatial_test limit 1;",
+                                       dt)));
+    ASSERT_NEAR(static_cast<double>(557637.370),  // geodesic distance between first and end points: LA - SF trip
+                v<double>(run_simple_agg("SELECT ST_Distance(ST_PointN(ST_GeomFromText("
+                                         "'LINESTRING(-118.243683 34.052235, "
+                                         "-119.229034 34.274647, -119.698189 34.420830, -121.898460 36.603954, "
+                                         "-122.446747 37.733795)', 4326), 1), "
+                                         "ST_EndPoint(ST_GeomFromText("
+                                         "'LINESTRING(-118.243683 34.052235, "
+                                         "-119.229034 34.274647, -119.698189 34.420830, -121.898460 36.603954, "
+                                         "-122.446747 37.733795)', 4326))) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.001));
+    ASSERT_NEAR(static_cast<double>(689217.783),  // cartesian distance between transformed first and end points
+                v<double>(run_simple_agg("SELECT ST_Distance(ST_StartPoint(ST_Transform(ST_GeomFromText("
+                                         "'LINESTRING(-118.243683 34.052235, "
+                                         "-119.229034 34.274647, -119.698189 34.420830, -121.898460 36.603954, "
+                                         "-122.446747 37.733795)', 4326), 900913)), "
+                                         "ST_EndPoint(ST_Transform(ST_GeomFromText("
+                                         "'LINESTRING(-118.243683 34.052235, "
+                                         "-119.229034 34.274647, -119.698189 34.420830, -121.898460 36.603954, "
+                                         "-122.446747 37.733795)', 4326), 900913))) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.001));
+    // Linestring: check that runaway indices are controlled
+    ASSERT_NEAR(static_cast<double>(-122.446747),  // stop at endpoint
+                v<double>(run_simple_agg("SELECT ST_X(ST_PointN(ST_GeomFromText("
+                                         "'LINESTRING(-118.243683 34.052235, "
+                                         "-119.229034 34.274647, -119.698189 34.420830, -121.898460 36.603954, "
+                                         "-122.446747 37.733795)', 4326), 1000000)) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(0.001));
+
+    // Point geometries, literals in different spatial references, transforms
+    ASSERT_EQ(static_cast<int64_t>(g_num_rows),
+              v<int64_t>(run_simple_agg(
+                  "SELECT COUNT(*) FROM geospatial_test WHERE ST_Distance('POINT(0 0)', gp) < 100.0;", dt)));
+    ASSERT_EQ(static_cast<int64_t>(4),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE "
+                                        "ST_Distance(ST_GeomFromText('POINT(0 0)', 4326), gp4326) < 500000.0;",
+                                        dt)));
+    ASSERT_EQ(static_cast<int64_t>(4),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE "
+                                        "ST_Distance(ST_GeomFromText('POINT(0 0)', 900913), gp900913) < 5.0;",
+                                        dt)));
+    ASSERT_EQ(static_cast<int64_t>(4),
+              v<int64_t>(run_simple_agg("SELECT COUNT(*) FROM geospatial_test WHERE "
+                                        "ST_Distance(ST_Transform(ST_GeomFromText('POINT(0 0)', 4326), 900913), "
+                                        "ST_Transform(gp4326, 900913)) < 500000.0;",
+                                        dt)));
+
+    // Test some exceptions
+    // Point coord accessor used on a non-POINT, in this case unindexed LINESTRING (missing ST_POINTN)
+    EXPECT_THROW(run_simple_agg("SELECT ST_Y(ST_GeomFromText("
+                                "'LINESTRING(-118.243683 34.052235, -119.229034 34.274647)', 4326)) "
+                                "from geospatial_test limit 1;",
+                                dt),
+                 std::runtime_error);
+    // Two accessors in a row
+    EXPECT_THROW(run_simple_agg("SELECT ST_X(ST_Y(ST_GeomFromText('POINT(-118.243683 34.052235)', 4326))) "
+                                "from geospatial_test limit 1;",
+                                dt),
+                 std::runtime_error);
+    // Coord order reversed, longitude value is out of latitude range
+    EXPECT_THROW(run_simple_agg("SELECT ST_Y(ST_GeomFromText('POINT(34.052235 -118.243683)', 4326)) "
+                                "from geospatial_test limit 1;",
+                                dt),
+                 std::runtime_error);
+    // Linestring accessor on a non-LINESTRING
+    EXPECT_THROW(run_simple_agg("SELECT ST_X(ST_ENDPOINT('POINT(-118.243683 34.052235)')) "
+                                "from geospatial_test limit 1;",
+                                dt),
+                 std::runtime_error);
+
+    // ST_SRID, ST_SetSRID
+    ASSERT_EQ(static_cast<int64_t>(0),
+              v<int64_t>(run_simple_agg("SELECT ST_SRID(p) from geospatial_test limit 1;", dt)));
+    ASSERT_EQ(static_cast<int64_t>(4326),
+              v<int64_t>(run_simple_agg("SELECT ST_SRID(gp4326) from geospatial_test limit 1;", dt)));
+    ASSERT_EQ(static_cast<int64_t>(900913),
+              v<int64_t>(run_simple_agg("SELECT ST_SRID(gp900913) from geospatial_test limit 1;", dt)));
+    ASSERT_EQ(static_cast<int64_t>(4326),
+              v<int64_t>(run_simple_agg("SELECT ST_SRID(ST_GeomFromText('POINT(-118.243683 34.052235)', 4326)) "
+                                        "from geospatial_test limit 1;",
+                                        dt)));
+    // Geodesic distance between Paris and LA: ~9105km
+    ASSERT_NEAR(static_cast<double>(9105643.0),
+                v<double>(run_simple_agg("SELECT ST_Distance(ST_SetSRID('POINT(-118.4079 33.9434)', 4326), "
+                                         "ST_SetSRID('POINT(2.5559 49.0083)', 4326)) "
+                                         "from geospatial_test limit 1;",
+                                         dt)),
+                static_cast<double>(10000.0));
+  }
+}
+
 namespace {
 
 int create_and_populate_tables() {
@@ -3933,6 +4298,29 @@ int create_and_populate_tables() {
     const std::string insert_query{"INSERT INTO test_inner VALUES(7, 43, 'foo');"};
     run_multiple_agg(insert_query, ExecutorDeviceType::CPU);
     g_sqlite_comparator.query(insert_query);
+  }
+  try {
+    const std::string drop_old_test_inner_deleted{"DROP TABLE IF EXISTS test_inner_deleted;"};
+    run_ddl_statement(drop_old_test_inner_deleted);
+    g_sqlite_comparator.query(drop_old_test_inner_deleted);
+    std::string columns_definition{"x int not null, y int, str text encoding dict, deleted boolean"};
+    const auto create_test_inner_deleted =
+        build_create_table_statement(columns_definition, "test_inner_deleted", {"", 0}, {}, 2);
+    run_ddl_statement(create_test_inner_deleted);
+    auto& cat = g_session->get_catalog();
+    const auto td = cat.getMetadataForTable("test_inner_deleted");
+    CHECK(td);
+    const auto cd = cat.getMetadataForColumn(td->tableId, "deleted");
+    CHECK(cd);
+    cat.setDeletedColumn(td, cd);
+    g_sqlite_comparator.query("CREATE TABLE test_inner_deleted(x int not null, y int, str text);");
+  } catch (...) {
+    LOG(ERROR) << "Failed to (re-)create table 'test_inner_deleted'";
+    return -EEXIST;
+  }
+  {
+    const std::string insert_query{"INSERT INTO test_inner_deleted VALUES(7, 43, 'foo', 't');"};
+    run_multiple_agg(insert_query, ExecutorDeviceType::CPU);
   }
   try {
     const std::string drop_old_test{"DROP TABLE IF EXISTS test_inner_x;"};
@@ -4180,6 +4568,12 @@ int create_and_populate_tables() {
     return -EEXIST;
   }
   try {
+    import_geospatial_test();
+  } catch (...) {
+    LOG(ERROR) << "Failed to (re-)create table 'geospatial_test'";
+    return -EEXIST;
+  }
+  try {
     const std::string drop_old_empty{"DROP TABLE IF EXISTS emptytab;"};
     run_ddl_statement(drop_old_empty);
     g_sqlite_comparator.query(drop_old_empty);
@@ -4306,6 +4700,9 @@ void drop_tables() {
   const std::string drop_test_inner_x{"DROP TABLE test_inner_x;"};
   run_ddl_statement(drop_test_inner_x);
   g_sqlite_comparator.query(drop_test_inner_x);
+  const std::string drop_test_inner_deleted{"DROP TABLE test_inner_deleted;"};
+  run_ddl_statement(drop_test_inner_deleted);
+  g_sqlite_comparator.query(drop_test_inner_deleted);
   const std::string drop_bar{"DROP TABLE bar;"};
   run_ddl_statement(drop_bar);
   g_sqlite_comparator.query(drop_bar);
@@ -4346,6 +4743,7 @@ void drop_tables() {
   const std::string drop_dept_table{"DROP TABLE dept;"};
   g_sqlite_comparator.query(drop_dept_table);
   run_ddl_statement(drop_dept_table);
+  run_ddl_statement("DROP TABLE geospatial_test;");
   const std::string drop_test_in_bitmap{"DROP TABLE test_in_bitmap;"};
   g_sqlite_comparator.query(drop_test_in_bitmap);
   run_ddl_statement(drop_test_in_bitmap);

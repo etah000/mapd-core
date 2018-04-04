@@ -58,6 +58,7 @@
 #include "Shared/StringTransform.h"
 #include "Shared/geosupport.h"
 #include "Shared/mapd_shared_mutex.h"
+#include "Shared/mapd_shared_ptr.h"
 #include "Shared/measure.h"
 #include "Shared/scope.h"
 
@@ -347,7 +348,8 @@ class MapDHandler : public MapDIf {
   void get_table_details_impl(TTableDetails& _return,
                               const TSessionId& session,
                               const std::string& table_name,
-                              const bool get_system);
+                              const bool get_system,
+                              const bool get_physical);
   void check_read_only(const std::string& str);
   SessionMap::iterator get_session_it(const TSessionId& session);
   static void value_to_thrift_column(const TargetValue& tv, const SQLTypeInfo& ti, TColumn& column);
@@ -390,7 +392,7 @@ class MapDHandler : public MapDIf {
   char unescape_char(std::string str);
   Importer_NS::CopyParams thrift_to_copyparams(const TCopyParams& cp);
   TCopyParams copyparams_to_thrift(const Importer_NS::CopyParams& cp);
-  void check_geospatial_files(const boost::filesystem::path file_path);
+  void check_geospatial_files(const boost::filesystem::path file_path, const Importer_NS::CopyParams& copy_params);
   std::string sanitize_name(const std::string& name);
   void render_rel_alg(TRenderResult& _return,
                       const std::string& query_ra,
@@ -399,7 +401,7 @@ class MapDHandler : public MapDIf {
                       const std::string& render_type,
                       const bool is_projection_query);
 
-  TColumnType create_array_column(const TDatumType::type type, const std::string& name);
+  TColumnType create_geo_column(const TDatumType::type type, const std::string& name, const bool is_array);
 
   void convert_explain(TQueryResult& _return, const ResultSet& results, const bool column_format) const;
   void convert_result(TQueryResult& _return, const ResultSet& results, const bool column_format) const;
@@ -467,7 +469,7 @@ class MapDHandler : public MapDIf {
   mutable std::mutex handle_to_dev_ptr_mutex_;
   mutable std::unordered_map<std::string, int8_t*> ipc_handle_to_dev_ptr_;
 
-  friend void run_warmup_queries(boost::shared_ptr<MapDHandler> handler,
+  friend void run_warmup_queries(mapd::shared_ptr<MapDHandler> handler,
                                  std::string base_path,
                                  std::string query_file_path);
 

@@ -56,7 +56,11 @@ enum SQLTypes {
   kARRAY = 15,
   kINTERVAL_DAY_TIME = 16,
   kINTERVAL_YEAR_MONTH = 17,
-  kSQLTYPE_LAST = 18
+  kPOINT = 18,
+  kLINESTRING = 19,
+  kPOLYGON = 20,
+  kMULTIPOLYGON = 21,
+  kSQLTYPE_LAST = 22
 };
 
 struct VarlenDatum {
@@ -126,6 +130,7 @@ enum EncodingType {
    ((T) == kNUMERIC) || ((T) == kDECIMAL))
 #define IS_STRING(T) (((T) == kTEXT) || ((T) == kVARCHAR) || ((T) == kCHAR))
 #define IS_TIME(T) (((T) == kTIME) || ((T) == kTIMESTAMP) || ((T) == kDATE))
+#define IS_GEO(T) (((T) == kPOINT) || ((T) == kLINESTRING) || ((T) == kPOLYGON) || ((T) == kMULTIPOLYGON))
 
 #define NULL_BOOLEAN INT8_MIN
 #define NULL_TINYINT INT8_MIN
@@ -194,10 +199,13 @@ class SQLTypeInfo {
   HOST DEVICE inline SQLTypes get_subtype() const { return subtype; }
   HOST DEVICE inline int get_dimension() const { return dimension; }
   inline int get_precision() const { return dimension; }
+  HOST DEVICE inline int get_input_srid() const { return dimension; }
   HOST DEVICE inline int get_scale() const { return scale; }
+  HOST DEVICE inline int get_output_srid() const { return scale; }
   HOST DEVICE inline bool get_notnull() const { return notnull; }
   HOST DEVICE inline EncodingType get_compression() const { return compression; }
   HOST DEVICE inline int get_comp_param() const { return comp_param; }
+  HOST DEVICE inline int get_index() const { return comp_param; }
   HOST DEVICE inline int get_size() const { return size; }
   inline int get_logical_size() const {
     if (compression == kENCODING_FIXED) {
@@ -209,18 +217,62 @@ class SQLTypeInfo {
     }
     return get_size();
   }
+  inline int get_physical_cols() const {
+    switch (type) {
+      case kPOINT:
+      case kLINESTRING:
+        return 1;
+      case kPOLYGON:
+        return 3;
+      case kMULTIPOLYGON:
+        return 4;
+      default:
+        break;
+    }
+    return 0;
+  }
+  inline int get_physical_coord_cols() const {
+    // @TODO dmitri/simon rename this function?
+    // It needs to return the number of extra columns
+    // which need to go through the executor, as opposed
+    // to those which are only needed by CPU for poly
+    // cache building or what-not. For now, we just omit
+    // the Render Group column. If we add Bounding Box
+    // or something this may require rethinking. Perhaps
+    // these two functions need to return an array of
+    // offsets rather than just a number to loop over,
+    // so that executor and non-executor columns can
+    // be mixed.
+    switch (type) {
+      case kPOINT:
+      case kLINESTRING:
+        return 1;
+      case kPOLYGON:
+        return 2;  // omit render group
+      case kMULTIPOLYGON:
+        return 3;  // omit render group
+      default:
+        break;
+    }
+    return 0;
+  }
   inline void set_type(SQLTypes t) { type = t; }
   inline void set_subtype(SQLTypes st) { subtype = st; }
   inline void set_dimension(int d) { dimension = d; }
   inline void set_precision(int d) { dimension = d; }
+  inline void set_input_srid(int d) { dimension = d; }
   inline void set_scale(int s) { scale = s; }
+  inline void set_output_srid(int s) { scale = s; }
   inline void set_notnull(bool n) { notnull = n; }
   inline void set_size(int s) { size = s; }
   inline void set_fixed_size() { size = get_storage_size(); }
   inline void set_compression(EncodingType c) { compression = c; }
   inline void set_comp_param(int p) { comp_param = p; }
+  inline void set_index(int s) { comp_param = s; }
 #ifndef __CUDACC__
   inline std::string get_type_name() const {
+    if (IS_GEO(type) && scale > 0)
+      return "GEOMETRY(" + type_name[(int)type] + ", " + std::to_string(scale) + ")";
     std::string ps = (type == kDECIMAL || type == kNUMERIC || subtype == kDECIMAL || subtype == kNUMERIC)
                          ? "(" + std::to_string(dimension) + "," + std::to_string(scale) + ")"
                          : "";
@@ -238,8 +290,11 @@ class SQLTypeInfo {
   inline bool is_boolean() const { return type == kBOOLEAN; }
   inline bool is_array() const { return type == kARRAY; }
   inline bool is_timeinterval() const { return type == kINTERVAL_DAY_TIME || type == kINTERVAL_YEAR_MONTH; }
+  inline bool is_geometry() const { return IS_GEO(type); }
 
-  inline bool is_varlen() const { return (IS_STRING(type) && compression != kENCODING_DICT) || type == kARRAY; }
+  inline bool is_varlen() const {
+    return (IS_STRING(type) && compression != kENCODING_DICT) || type == kARRAY || IS_GEO(type);
+  }
 
   HOST DEVICE inline bool operator!=(const SQLTypeInfo& rhs) const {
     return type != rhs.get_type() || subtype != rhs.get_subtype() || dimension != rhs.get_dimension() ||
@@ -477,6 +532,11 @@ class SQLTypeInfo {
       case kCHAR:
         if (compression == kENCODING_DICT)
           return sizeof(int32_t);  // @TODO(wei) must check DictDescriptor
+        break;
+      case kPOINT:
+      case kLINESTRING:
+      case kPOLYGON:
+      case kMULTIPOLYGON:
         break;
       default:
         break;

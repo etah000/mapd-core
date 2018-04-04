@@ -32,9 +32,9 @@ class ContextOperations {
   using ThriftService = typename CONTEXT_OP_POLICY::ThriftServiceType;
   using ContextType = typename CONTEXT_OP_POLICY::ContextType;
 
-  static void import_geo_table(ContextType context) { thrift_op<kIMPORT_GEO_TABLE>(context); }
+  static void import_geo_table(ContextType& context) { thrift_op<kIMPORT_GEO_TABLE>(context); }
 
-  static void get_all_roles(ContextType context) {
+  static void get_all_roles(ContextType& context) {
     context.role_names.clear();
     context.userPrivateRole = false;
     thrift_op<kGET_ALL_ROLES>(context,
@@ -46,7 +46,47 @@ class ContextOperations {
                               [](ContextType&) { std::cout << "Cannot connect to MapD Server." << std::endl; });
   }
 
-  static void get_all_roles_for_user(ContextType context) {
+  static void get_status(ContextType& context, std::ostream& output_stream = std::cout) {
+    auto success_op = [&output_stream](ContextType& lambda_context) {
+      time_t t = (time_t)lambda_context.cluster_status[0].start_time;
+      std::tm* tm_ptr = gmtime(&t);
+      char buf[12] = {0};
+      strftime(buf, 11, "%F", tm_ptr);
+      std::string server_version = lambda_context.cluster_status[0].version;
+
+      output_stream << "The Server Version Number  : " << lambda_context.cluster_status[0].version << std::endl;
+      output_stream << "The Server Start Time      : " << buf << " : " << tm_ptr->tm_hour << ":" << tm_ptr->tm_min
+                    << ":" << tm_ptr->tm_sec << std::endl;
+      output_stream << "The Server edition         : " << server_version << std::endl;
+
+      if (lambda_context.cluster_status.size() > 1) {
+        output_stream << "The Number of Leaves       : " << lambda_context.cluster_status.size() - 1 << std::endl;
+        for (auto leaf = lambda_context.cluster_status.begin() + 1; leaf != lambda_context.cluster_status.end();
+             ++leaf) {
+          t = (time_t)leaf->start_time;
+          buf[11] = 0;
+          std::tm* tm_ptr = gmtime(&t);
+          strftime(buf, 11, "%F", tm_ptr);
+          output_stream << "--------------------------------------------------" << std::endl;
+          output_stream << "Name of Leaf               : " << leaf->host_name << std::endl;
+          if (server_version.compare(leaf->version) != 0) {
+            output_stream << "The Leaf Version Number    : " << leaf->version << std::endl;
+            std::cerr << "Version number mismatch!" << std::endl;
+          }
+          output_stream << "The Leaf Start Time        : " << buf << " : " << tm_ptr->tm_hour << ":" << tm_ptr->tm_min
+                        << ":" << tm_ptr->tm_sec << std::endl;
+        }
+      }
+    };
+
+    auto fail_op = [&output_stream](ContextType& lambda_context) {
+      output_stream << "Cannot connect to MapD Server." << std::endl;
+    };
+
+    thrift_op<kGET_SERVER_STATUS>(context, success_op, fail_op);
+  }
+
+  static void get_all_roles_for_user(ContextType& context) {
     context.role_names.clear();
     thrift_op<kGET_ROLES_FOR_USER>(context,
                                    context.privs_user_name.c_str(),
@@ -142,9 +182,21 @@ class CmdStringUtilities {
 // Standard Command Definitions
 //
 
+StandardCommand(Status, { ContextOps::get_status(cmdContext(), output_stream); });
+
 StandardCommand(CopyGeo, {
   cmdContext().file_name = p[1];   // File name is the first parameter
   cmdContext().table_name = p[2];  // Table name is the second parameter
+
+  // populate S3 authentication tokens from environment
+  char* env = nullptr;
+  if (nullptr != (env = getenv("AWS_REGION")))
+    cmdContext().copy_params.s3_region = env;
+  if (nullptr != (env = getenv("AWS_ACCESS_KEY_ID")))
+    cmdContext().copy_params.s3_access_key = env;
+  if (nullptr != (env = getenv("AWS_SECRET_ACCESS_KEY")))
+    cmdContext().copy_params.s3_secret_key = env;
+
   ContextOps::import_geo_table(cmdContext());
 });
 
@@ -401,8 +453,8 @@ StandardCommand(GetOptimizedSchema, {
     return context.query_return.row_set.columns[0].data.int_col[0];
   };
 
-  auto get_optimal_size =
-      [run_query](ClientContext& context, std::string table_name, std::string col_name, int col_type) -> int {
+  auto get_optimal_size = [run_query](
+      ClientContext& context, std::string table_name, std::string col_name, int col_type) -> int {
     switch (col_type) {
       case TDatumType::STR: {
         int strings = run_query(context, "select count(distinct " + col_name + ") from " + table_name + ";");

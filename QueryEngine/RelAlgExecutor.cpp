@@ -519,7 +519,32 @@ namespace {
 
 class RexUsedInputsVisitor : public RexVisitor<std::unordered_set<const RexInput*>> {
  public:
-  std::unordered_set<const RexInput*> visitInput(const RexInput* rex_input) const override { return {rex_input}; }
+  RexUsedInputsVisitor(const Catalog_Namespace::Catalog& cat) : RexVisitor(), cat_(cat) {}
+
+  const std::vector<std::shared_ptr<RexInput>>& get_inputs_owned() const { return synthesized_physical_inputs_owned; }
+
+  std::unordered_set<const RexInput*> visitInput(const RexInput* rex_input) const override {
+    const auto input_ra = rex_input->getSourceNode();
+    const auto scan_ra = dynamic_cast<const RelScan*>(input_ra);
+    if (scan_ra) {
+      const auto td = scan_ra->getTableDescriptor();
+      if (td) {
+        const auto col_id = rex_input->getIndex();
+        const auto cd = cat_.getMetadataForColumn(td->tableId, col_id + 1);
+        if (cd && cd->columnType.get_physical_coord_cols() > 0) {
+          CHECK(IS_GEO(cd->columnType.get_type()));
+          std::unordered_set<const RexInput*> synthesized_physical_inputs;
+          for (auto i = 0; i < cd->columnType.get_physical_coord_cols(); i++) {
+            auto physical_input = new RexInput(scan_ra, col_id + 1 + i);
+            synthesized_physical_inputs_owned.emplace_back(physical_input);
+            synthesized_physical_inputs.insert(physical_input);
+          }
+          return synthesized_physical_inputs;
+        }
+      }
+    }
+    return {rex_input};
+  }
 
  protected:
   std::unordered_set<const RexInput*> aggregateResult(
@@ -529,6 +554,10 @@ class RexUsedInputsVisitor : public RexVisitor<std::unordered_set<const RexInput
     result.insert(next_result.begin(), next_result.end());
     return result;
   }
+
+ private:
+  mutable std::vector<std::shared_ptr<RexInput>> synthesized_physical_inputs_owned;
+  const Catalog_Namespace::Catalog& cat_;
 };
 
 const RelAlgNode* get_data_sink(const RelAlgNode* ra_node) {
@@ -548,8 +577,9 @@ const RelAlgNode* get_data_sink(const RelAlgNode* ra_node) {
 }
 
 std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexInput>>> get_used_inputs(
-    const RelCompound* compound) {
-  RexUsedInputsVisitor visitor;
+    const RelCompound* compound,
+    const Catalog_Namespace::Catalog& cat) {
+  RexUsedInputsVisitor visitor(cat);
   const auto filter_expr = compound->getFilterExpr();
   std::unordered_set<const RexInput*> used_inputs =
       filter_expr ? visitor.visit(filter_expr) : std::unordered_set<const RexInput*>{};
@@ -558,11 +588,13 @@ std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexIn
     const auto source_inputs = visitor.visit(compound->getScalarSource(i));
     used_inputs.insert(source_inputs.begin(), source_inputs.end());
   }
-  return std::make_pair(used_inputs, std::vector<std::shared_ptr<RexInput>>{});
+  std::vector<std::shared_ptr<RexInput>> used_inputs_owned(visitor.get_inputs_owned());
+  return std::make_pair(used_inputs, used_inputs_owned);
 }
 
 std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexInput>>> get_used_inputs(
-    const RelAggregate* aggregate) {
+    const RelAggregate* aggregate,
+    const Catalog_Namespace::Catalog& cat) {
   CHECK_EQ(size_t(1), aggregate->inputCount());
   std::unordered_set<const RexInput*> used_inputs;
   std::vector<std::shared_ptr<RexInput>> used_inputs_owned;
@@ -588,18 +620,21 @@ std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexIn
 }
 
 std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexInput>>> get_used_inputs(
-    const RelProject* project) {
-  RexUsedInputsVisitor visitor;
+    const RelProject* project,
+    const Catalog_Namespace::Catalog& cat) {
+  RexUsedInputsVisitor visitor(cat);
   std::unordered_set<const RexInput*> used_inputs;
   for (size_t i = 0; i < project->size(); ++i) {
     const auto proj_inputs = visitor.visit(project->getProjectAt(i));
     used_inputs.insert(proj_inputs.begin(), proj_inputs.end());
   }
-  return std::make_pair(used_inputs, std::vector<std::shared_ptr<RexInput>>{});
+  std::vector<std::shared_ptr<RexInput>> used_inputs_owned(visitor.get_inputs_owned());
+  return std::make_pair(used_inputs, used_inputs_owned);
 }
 
 std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexInput>>> get_used_inputs(
-    const RelFilter* filter) {
+    const RelFilter* filter,
+    const Catalog_Namespace::Catalog& cat) {
   std::unordered_set<const RexInput*> used_inputs;
   std::vector<std::shared_ptr<RexInput>> used_inputs_owned;
   const auto data_sink_node = get_data_sink(filter);
@@ -626,7 +661,8 @@ std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexIn
 }
 
 std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexInput>>> get_used_inputs(
-    const RelJoin* join) {
+    const RelJoin* join,
+    const Catalog_Namespace::Catalog& cat) {
   std::unordered_set<const RexInput*> used_inputs;
   std::vector<std::shared_ptr<RexInput>> used_inputs_owned;
   const auto lhs = join->getInput(0);
@@ -667,30 +703,35 @@ std::unordered_map<const RelAlgNode*, int> get_input_nest_levels(const RelAlgNod
   return input_to_nest_level;
 }
 
-std::unordered_set<const RexInput*> get_join_source_used_inputs(const RelAlgNode* ra_node) {
+std::pair<std::unordered_set<const RexInput*>, std::vector<std::shared_ptr<RexInput>>> get_join_source_used_inputs(
+    const RelAlgNode* ra_node,
+    const Catalog_Namespace::Catalog& cat) {
   const auto data_sink_node = get_data_sink(ra_node);
   if (auto join = dynamic_cast<const RelJoin*>(data_sink_node)) {
     CHECK_EQ(join->inputCount(), 2);
     const auto condition = join->getCondition();
-    RexUsedInputsVisitor visitor;
-    return visitor.visit(condition);
+    RexUsedInputsVisitor visitor(cat);
+    auto condition_inputs = visitor.visit(condition);
+    std::vector<std::shared_ptr<RexInput>> condition_inputs_owned(visitor.get_inputs_owned());
+    return std::make_pair(condition_inputs, condition_inputs_owned);
   }
 
   if (auto multi_join = dynamic_cast<const RelMultiJoin*>(data_sink_node)) {
     CHECK_GT(multi_join->inputCount(), 2);
-    RexUsedInputsVisitor visitor;
+    RexUsedInputsVisitor visitor(cat);
     std::unordered_set<const RexInput*> input_set;
     for (auto& condition : multi_join->getConditions()) {
       auto inputs = visitor.visit(condition.get());
       input_set.insert(inputs.begin(), inputs.end());
     }
-    return input_set;
+    std::vector<std::shared_ptr<RexInput>> used_inputs_owned(visitor.get_inputs_owned());
+    return std::make_pair(input_set, used_inputs_owned);
   }
 
   if (auto left_deep_join = dynamic_cast<const RelLeftDeepInnerJoin*>(data_sink_node)) {
     CHECK_GE(left_deep_join->inputCount(), 2);
     const auto condition = left_deep_join->getInnerCondition();
-    RexUsedInputsVisitor visitor;
+    RexUsedInputsVisitor visitor(cat);
     auto result = visitor.visit(condition);
     for (size_t nesting_level = 1; nesting_level <= left_deep_join->inputCount() - 1; ++nesting_level) {
       const auto outer_condition = left_deep_join->getOuterCondition(nesting_level);
@@ -699,11 +740,12 @@ std::unordered_set<const RexInput*> get_join_source_used_inputs(const RelAlgNode
         result.insert(outer_result.begin(), outer_result.end());
       }
     }
-    return result;
+    std::vector<std::shared_ptr<RexInput>> used_inputs_owned(visitor.get_inputs_owned());
+    return std::make_pair(result, used_inputs_owned);
   }
 
   CHECK_EQ(ra_node->inputCount(), 1);
-  return std::unordered_set<const RexInput*>{};
+  return std::make_pair(std::unordered_set<const RexInput*>{}, std::vector<std::shared_ptr<RexInput>>{});
 }
 
 size_t get_target_list_size(const RelAlgNode* ra_node) {
@@ -842,7 +884,8 @@ std::pair<std::vector<InputDescriptor>, std::list<std::shared_ptr<const InputCol
     const RA* ra_node,
     const std::unordered_set<const RexInput*>& used_inputs,
     const std::unordered_map<const RelAlgNode*, int>& input_to_nest_level,
-    const std::vector<size_t>& input_permutation) {
+    const std::vector<size_t>& input_permutation,
+    const Catalog_Namespace::Catalog& cat) {
   std::vector<InputDescriptor> input_descs;
   const auto data_sink_node = get_data_sink(ra_node);
   for (size_t input_idx = 0; input_idx < data_sink_node->inputCount(); ++input_idx) {
@@ -856,8 +899,10 @@ std::pair<std::vector<InputDescriptor>, std::list<std::shared_ptr<const InputCol
   });
   std::unordered_set<std::shared_ptr<const InputColDescriptor>> input_col_descs_unique;
   collect_used_input_desc(input_descs, input_col_descs_unique, ra_node, used_inputs, input_to_nest_level);
-  collect_used_input_desc(
-      input_descs, input_col_descs_unique, ra_node, get_join_source_used_inputs(ra_node), input_to_nest_level);
+  std::unordered_set<const RexInput*> join_source_used_inputs;
+  std::vector<std::shared_ptr<RexInput>> join_source_used_inputs_owned;
+  std::tie(join_source_used_inputs, join_source_used_inputs_owned) = get_join_source_used_inputs(ra_node, cat);
+  collect_used_input_desc(input_descs, input_col_descs_unique, ra_node, join_source_used_inputs, input_to_nest_level);
   std::vector<std::shared_ptr<const InputColDescriptor>> input_col_descs(input_col_descs_unique.begin(),
                                                                          input_col_descs_unique.end());
 
@@ -880,11 +925,12 @@ std::tuple<std::vector<InputDescriptor>,
            std::vector<std::shared_ptr<RexInput>>>
 get_input_desc(const RA* ra_node,
                const std::unordered_map<const RelAlgNode*, int>& input_to_nest_level,
-               const std::vector<size_t>& input_permutation) {
+               const std::vector<size_t>& input_permutation,
+               const Catalog_Namespace::Catalog& cat) {
   std::unordered_set<const RexInput*> used_inputs;
   std::vector<std::shared_ptr<RexInput>> used_inputs_owned;
-  std::tie(used_inputs, used_inputs_owned) = get_used_inputs(ra_node);
-  auto input_desc_pair = get_input_desc_impl(ra_node, used_inputs, input_to_nest_level, input_permutation);
+  std::tie(used_inputs, used_inputs_owned) = get_used_inputs(ra_node, cat);
+  auto input_desc_pair = get_input_desc_impl(ra_node, used_inputs, input_to_nest_level, input_permutation, cat);
   return std::make_tuple(input_desc_pair.first, input_desc_pair.second, used_inputs_owned);
 }
 
@@ -1218,7 +1264,11 @@ ExecutionResult RelAlgExecutor::executeSort(const RelSort* sort,
       }
       if (limit || offset) {
         if (g_cluster && sort->collationCount() == 0) {
-          rows_to_sort->keepFirstN(limit + offset);
+          if (offset >= rows_to_sort->rowCount()) {
+            rows_to_sort->dropFirstN(offset);
+          } else {
+            rows_to_sort->keepFirstN(limit + offset);
+          }
         } else {
           rows_to_sort->dropFirstN(offset);
           if (limit) {
@@ -1972,7 +2022,7 @@ RelAlgExecutor::WorkUnit RelAlgExecutor::createCompoundWorkUnit(const RelCompoun
   std::vector<InputDescriptor> input_descs;
   std::list<std::shared_ptr<const InputColDescriptor>> input_col_descs;
   auto input_to_nest_level = get_input_nest_levels(compound, {});
-  std::tie(input_descs, input_col_descs, std::ignore) = get_input_desc(compound, input_to_nest_level, {});
+  std::tie(input_descs, input_col_descs, std::ignore) = get_input_desc(compound, input_to_nest_level, {}, cat_);
   const auto query_infos = get_table_infos(input_descs, executor_);
   CHECK_EQ(size_t(1), compound->inputCount());
   const auto left_deep_join = dynamic_cast<const RelLeftDeepInnerJoin*>(compound->getInput(0));
@@ -1985,7 +2035,7 @@ RelAlgExecutor::WorkUnit RelAlgExecutor::createCompoundWorkUnit(const RelCompoun
       const auto input_permutation = get_node_input_permutation(query_infos);
       input_to_nest_level = get_input_nest_levels(compound, input_permutation);
       std::tie(input_descs, input_col_descs, std::ignore) =
-          get_input_desc(compound, input_to_nest_level, input_permutation);
+          get_input_desc(compound, input_to_nest_level, input_permutation, cat_);
     }
     left_deep_inner_joins = translateLeftDeepJoinFilter(left_deep_join, input_descs, input_to_nest_level, just_explain);
   }
@@ -2254,7 +2304,7 @@ RelAlgExecutor::WorkUnit RelAlgExecutor::createJoinWorkUnit(const RelJoin* join,
   std::vector<InputDescriptor> input_descs;
   std::list<std::shared_ptr<const InputColDescriptor>> input_col_descs;
   const auto input_to_nest_level = get_input_nest_levels(join, {});
-  std::tie(input_descs, input_col_descs, std::ignore) = get_input_desc(join, input_to_nest_level, {});
+  std::tie(input_descs, input_col_descs, std::ignore) = get_input_desc(join, input_to_nest_level, {}, cat_);
   const auto extra_input_descs = separate_extra_input_descs(input_descs);
   const auto join_type = join->getJoinType();
   RelAlgTranslator translator(cat_, executor_, input_to_nest_level, {join_type}, now_, just_explain);
@@ -2324,7 +2374,7 @@ RelAlgExecutor::WorkUnit RelAlgExecutor::createAggregateWorkUnit(const RelAggreg
   std::list<std::shared_ptr<const InputColDescriptor>> input_col_descs;
   std::vector<std::shared_ptr<RexInput>> used_inputs_owned;
   const auto input_to_nest_level = get_input_nest_levels(aggregate, {});
-  std::tie(input_descs, input_col_descs, used_inputs_owned) = get_input_desc(aggregate, input_to_nest_level, {});
+  std::tie(input_descs, input_col_descs, used_inputs_owned) = get_input_desc(aggregate, input_to_nest_level, {}, cat_);
   const auto extra_input_descs = separate_extra_input_descs(input_descs);
   const auto join_type = get_join_type(aggregate);
   RelAlgTranslator translator(cat_, executor_, input_to_nest_level, {join_type}, now_, just_explain);
@@ -2364,7 +2414,7 @@ RelAlgExecutor::WorkUnit RelAlgExecutor::createProjectWorkUnit(const RelProject*
   std::vector<InputDescriptor> input_descs;
   std::list<std::shared_ptr<const InputColDescriptor>> input_col_descs;
   auto input_to_nest_level = get_input_nest_levels(project, {});
-  std::tie(input_descs, input_col_descs, std::ignore) = get_input_desc(project, input_to_nest_level, {});
+  std::tie(input_descs, input_col_descs, std::ignore) = get_input_desc(project, input_to_nest_level, {}, cat_);
   const auto extra_input_descs = separate_extra_input_descs(input_descs);
   const auto left_deep_join = dynamic_cast<const RelLeftDeepInnerJoin*>(project->getInput(0));
   JoinQualsPerNestingLevel left_deep_inner_joins;
@@ -2377,7 +2427,7 @@ RelAlgExecutor::WorkUnit RelAlgExecutor::createProjectWorkUnit(const RelProject*
       const auto input_permutation = get_node_input_permutation(query_infos);
       input_to_nest_level = get_input_nest_levels(project, input_permutation);
       std::tie(input_descs, input_col_descs, std::ignore) =
-          get_input_desc(project, input_to_nest_level, input_permutation);
+          get_input_desc(project, input_to_nest_level, input_permutation, cat_);
     }
     left_deep_inner_joins = translateLeftDeepJoinFilter(left_deep_join, input_descs, input_to_nest_level, just_explain);
   }
@@ -2456,7 +2506,7 @@ RelAlgExecutor::WorkUnit RelAlgExecutor::createFilterWorkUnit(const RelFilter* f
   std::vector<std::shared_ptr<Analyzer::Expr>> target_exprs_owned;
 
   const auto input_to_nest_level = get_input_nest_levels(filter, {});
-  std::tie(input_descs, input_col_descs, used_inputs_owned) = get_input_desc(filter, input_to_nest_level, {});
+  std::tie(input_descs, input_col_descs, used_inputs_owned) = get_input_desc(filter, input_to_nest_level, {}, cat_);
   const auto extra_input_descs = separate_extra_input_descs(input_descs);
   const auto join_type = get_join_type(filter);
   RelAlgTranslator translator(cat_, executor_, input_to_nest_level, {join_type}, now_, just_explain);

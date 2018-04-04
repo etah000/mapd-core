@@ -416,18 +416,28 @@ void MapDHandler::get_hardware_info(TClusterHardwareInfo& _return, const TSessio
 }
 
 void MapDHandler::value_to_thrift_column(const TargetValue& tv, const SQLTypeInfo& ti, TColumn& column) {
-  const auto scalar_tv = boost::get<ScalarTargetValue>(&tv);
-  if (!scalar_tv) {
+  if (ti.is_array()) {
     const auto list_tv = boost::get<std::vector<ScalarTargetValue>>(&tv);
     CHECK(list_tv);
-    CHECK(ti.is_array());
     TColumn tColumn;
     for (const auto& elem_tv : *list_tv) {
       value_to_thrift_column(elem_tv, ti.get_elem_type(), tColumn);
     }
     column.data.arr_col.push_back(tColumn);
     column.nulls.push_back(list_tv->size() == 0);
+  } else if (ti.is_geometry()) {
+    const auto list_tv = boost::get<std::vector<ScalarTargetValue>>(&tv);
+    CHECK(list_tv);
+    auto elem_type = SQLTypeInfo(kDOUBLE, false);
+    TColumn tColumn;
+    for (const auto& elem_tv : *list_tv) {
+      value_to_thrift_column(elem_tv, elem_type, tColumn);
+    }
+    column.data.arr_col.push_back(tColumn);
+    column.nulls.push_back(list_tv->size() == 0);
   } else {
+    const auto scalar_tv = boost::get<ScalarTargetValue>(&tv);
+    CHECK(scalar_tv);
     if (boost::get<int64_t>(scalar_tv)) {
       int64_t data = *(boost::get<int64_t>(scalar_tv));
       column.data.int_col.push_back(data);
@@ -1089,17 +1099,18 @@ void MapDHandler::get_table_descriptor(TTableDescriptor& _return,
 void MapDHandler::get_internal_table_details(TTableDetails& _return,
                                              const TSessionId& session,
                                              const std::string& table_name) {
-  get_table_details_impl(_return, session, table_name, true);
+  get_table_details_impl(_return, session, table_name, true, true);
 }
 
 void MapDHandler::get_table_details(TTableDetails& _return, const TSessionId& session, const std::string& table_name) {
-  get_table_details_impl(_return, session, table_name, false);
+  get_table_details_impl(_return, session, table_name, false, false);
 }
 
 void MapDHandler::get_table_details_impl(TTableDetails& _return,
                                          const TSessionId& session,
                                          const std::string& table_name,
-                                         const bool get_system) {
+                                         const bool get_system,
+                                         const bool get_physical) {
   const auto session_info = get_session(session);
   auto& cat = session_info.get_catalog();
   auto td =
@@ -1121,8 +1132,12 @@ void MapDHandler::get_table_details_impl(TTableDetails& _return,
   } else {
     try {
       if (!SysCatalog::instance().arePrivilegesOn() || hasTableAccessPrivileges(td, session)) {
-        const auto col_descriptors = cat.getAllColumnMetadataForTable(td->tableId, get_system, true);
+        const auto col_descriptors = cat.getAllColumnMetadataForTable(td->tableId, get_system, true, get_physical);
+        const auto deleted_cd = cat.getDeletedColumn(td);
         for (const auto cd : col_descriptors) {
+          if (cd == deleted_cd) {
+            continue;
+          }
           _return.row_desc.push_back(populateThriftColumnType(&cat, cd));
         }
       } else {
@@ -1696,6 +1711,12 @@ Importer_NS::CopyParams MapDHandler::thrift_to_copyparams(const TCopyParams& cp)
     copy_params.array_end = unescape_char(cp.array_end);
   if (cp.threads != 0)
     copy_params.threads = cp.threads;
+  if (cp.s3_access_key.length() > 0)
+    copy_params.s3_access_key = cp.s3_access_key;
+  if (cp.s3_secret_key.length() > 0)
+    copy_params.s3_secret_key = cp.s3_secret_key;
+  if (cp.s3_region.length() > 0)
+    copy_params.s3_region = cp.s3_region;
   switch (cp.table_type) {
     case TTableType::POLYGON:
       copy_params.table_type = Importer_NS::TableType::POLYGON;
@@ -1720,6 +1741,9 @@ TCopyParams MapDHandler::copyparams_to_thrift(const Importer_NS::CopyParams& cp)
   copy_params.array_begin = cp.array_begin;
   copy_params.array_end = cp.array_end;
   copy_params.threads = cp.threads;
+  copy_params.s3_access_key = cp.s3_access_key;
+  copy_params.s3_secret_key = cp.s3_secret_key;
+  copy_params.s3_region = cp.s3_region;
   switch (cp.table_type) {
     case Importer_NS::TableType::POLYGON:
       copy_params.table_type = TTableType::POLYGON;
@@ -1741,17 +1765,26 @@ void MapDHandler::detect_column_types(TDetectResult& _return,
   // Assume relative paths are relative to data_path / mapd_import / <session>
   std::string file_name{file_name_in};
   auto file_path = boost::filesystem::path(file_name);
-  if (!boost::filesystem::path(file_name).is_absolute()) {
-    file_path = import_path_ / session / boost::filesystem::path(file_name).filename();
-    file_name = file_path.string();
-  }
-
-  if (!boost::filesystem::exists(file_path)) {
-    THROW_MAPD_EXCEPTION("File does not exist: " + file_path.string());
-  }
-
   Importer_NS::CopyParams copy_params = thrift_to_copyparams(cp);
+  // can be a s3 url
+  if (!boost::istarts_with(file_name, "s3://")) {
+    if (!boost::filesystem::path(file_name).is_absolute()) {
+      file_path = import_path_ / session / boost::filesystem::path(file_name).filename();
+      file_name = file_path.string();
+    }
 
+    if (copy_params.table_type == Importer_NS::TableType::POLYGON) {
+      // check for geo file
+      if (!Importer_NS::Importer::gdalFileExists(file_name, copy_params)) {
+        THROW_MAPD_EXCEPTION("File does not exist: " + file_path.string());
+      }
+    } else {
+      // check for regular file
+      if (!boost::filesystem::exists(file_path)) {
+        THROW_MAPD_EXCEPTION("File does not exist: " + file_path.string());
+      }
+    }
+  }
   try {
     if (copy_params.table_type == Importer_NS::TableType::DELIMITED) {
       Importer_NS::Detector detector(file_path, copy_params);
@@ -1789,14 +1822,18 @@ void MapDHandler::detect_column_types(TDetectResult& _return,
         _return.row_set.rows.push_back(sample_row);
       }
     } else if (copy_params.table_type == Importer_NS::TableType::POLYGON) {
-      check_geospatial_files(file_path);
-      std::list<ColumnDescriptor> cds = Importer_NS::Importer::gdalToColumnDescriptors(file_path.string());
+      // @TODO simon.eves get this from somewhere!
+      const std::string geoColumnName(MAPD_GEO_PREFIX);
+
+      check_geospatial_files(file_path, copy_params);
+      std::list<ColumnDescriptor> cds =
+          Importer_NS::Importer::gdalToColumnDescriptors(file_path.string(), geoColumnName, copy_params);
       for (auto cd : cds) {
         cd.columnName = sanitize_name(cd.columnName);
         _return.row_set.row_desc.push_back(populateThriftColumnType(nullptr, &cd));
       }
       std::map<std::string, std::vector<std::string>> sample_data;
-      Importer_NS::Importer::readMetadataSampleGDAL(file_path.string(), sample_data, 100);
+      Importer_NS::Importer::readMetadataSampleGDAL(file_path.string(), geoColumnName, sample_data, 100, copy_params);
       if (sample_data.size() > 0) {
         for (size_t i = 0; i < sample_data.begin()->second.size(); i++) {
           TRow sample_row;
@@ -1940,22 +1977,24 @@ std::string MapDHandler::sanitize_name(const std::string& name) {
   return col_name;
 }
 
-TColumnType MapDHandler::create_array_column(const TDatumType::type type, const std::string& name) {
+TColumnType MapDHandler::create_geo_column(const TDatumType::type type, const std::string& name, const bool is_array) {
   TColumnType ct;
   ct.col_name = name;
   ct.col_type.type = type;
-  ct.col_type.is_array = true;
+  ct.col_type.is_array = is_array;
   return ct;
 }
 
-void MapDHandler::check_geospatial_files(const boost::filesystem::path file_path) {
+void MapDHandler::check_geospatial_files(const boost::filesystem::path file_path,
+                                         const Importer_NS::CopyParams& copy_params) {
   const std::list<std::string> shp_ext{".shp", ".shx", ".dbf"};
   if (std::find(shp_ext.begin(), shp_ext.end(), boost::algorithm::to_lower_copy(file_path.extension().string())) !=
       shp_ext.end()) {
     for (auto ext : shp_ext) {
       auto aux_file = file_path;
-      if (!boost::filesystem::exists(aux_file.replace_extension(boost::algorithm::to_upper_copy(ext))) &&
-          !boost::filesystem::exists(aux_file.replace_extension(ext))) {
+      if (!Importer_NS::Importer::gdalFileExists(
+              aux_file.replace_extension(boost::algorithm::to_upper_copy(ext)).string(), copy_params) &&
+          !Importer_NS::Importer::gdalFileExists(aux_file.replace_extension(ext).string(), copy_params)) {
         throw std::runtime_error("required file for shapefile does not exist: " + aux_file.filename().string());
       }
     }
@@ -1974,12 +2013,9 @@ void MapDHandler::create_table(const TSessionId& session,
 
   auto rds = rd;
 
-  if (table_type == TTableType::POLYGON) {
-    rds.push_back(create_array_column(TDatumType::DOUBLE, MAPD_GEO_PREFIX + "coords"));
-    rds.push_back(create_array_column(TDatumType::INT, MAPD_GEO_PREFIX + "indices"));
-    rds.push_back(create_array_column(TDatumType::INT, MAPD_GEO_PREFIX + "linedrawinfo"));
-    rds.push_back(create_array_column(TDatumType::INT, MAPD_GEO_PREFIX + "polydrawinfo"));
-  }
+  // no longer need to manually add the poly column for a TTableType::POLYGON table
+  // a column of the correct geo type has already been added
+  // @TODO simon.eves rename TTableType::POLYGON to TTableType::GEO or something!
 
   std::string stmt{"CREATE TABLE " + table_name};
   std::vector<std::string> col_stmts;
@@ -2022,10 +2058,10 @@ void MapDHandler::create_table(const TSessionId& session,
 
 void MapDHandler::import_table(const TSessionId& session,
                                const std::string& table_name,
-                               const std::string& file_name,
+                               const std::string& file_name_in,
                                const TCopyParams& cp) {
   check_read_only("import_table");
-  LOG(INFO) << "import_table " << table_name << " from " << file_name;
+  LOG(INFO) << "import_table " << table_name << " from " << file_name_in;
   const auto session_info = get_session(session);
   auto& cat = session_info.get_catalog();
 
@@ -2035,12 +2071,18 @@ void MapDHandler::import_table(const TSessionId& session,
   }
   check_table_load_privileges(session_info, table_name);
 
-  auto file_path = import_path_ / session / boost::filesystem::path(file_name).filename();
-  if (!boost::filesystem::exists(file_path)) {
-    THROW_MAPD_EXCEPTION("File does not exist: " + file_path.filename().string());
-  }
-
+  std::string file_name{file_name_in};
+  auto file_path = boost::filesystem::path(file_name);
   Importer_NS::CopyParams copy_params = thrift_to_copyparams(cp);
+  if (!boost::istarts_with(file_name, "s3://")) {
+    if (!boost::filesystem::path(file_name).is_absolute()) {
+      file_path = import_path_ / session / boost::filesystem::path(file_name).filename();
+      file_name = file_path.string();
+    }
+    if (!boost::filesystem::exists(file_path)) {
+      THROW_MAPD_EXCEPTION("File does not exist: " + file_path.string());
+    }
+  }
 
   // TODO(andrew): add delimiter detection to Importer
   if (copy_params.delimiter == '\0') {
@@ -2074,6 +2116,8 @@ void MapDHandler::import_geo_table(const TSessionId& session,
   const auto session_info = get_session(session);
   auto& cat = session_info.get_catalog();
 
+  Importer_NS::CopyParams copy_params = thrift_to_copyparams(cp);
+
   // Assume relative paths are relative to data_path / mapd_import / <session>
   std::string file_name{file_name_in};
   if (!boost::filesystem::path(file_name).is_absolute()) {
@@ -2084,11 +2128,11 @@ void MapDHandler::import_geo_table(const TSessionId& session,
   LOG(INFO) << "import_geo_table " << table_name << " from " << file_name;
 
   auto file_path = boost::filesystem::path(file_name);
-  if (!boost::filesystem::exists(file_path)) {
+  if (!Importer_NS::Importer::gdalFileExists(file_name, copy_params)) {
     THROW_MAPD_EXCEPTION("File does not exist: " + file_path.filename().string());
   }
   try {
-    check_geospatial_files(file_path);
+    check_geospatial_files(file_path, copy_params);
   } catch (const std::exception& e) {
     THROW_MAPD_EXCEPTION("import_geo_table error: " + std::string(e.what()));
   }
@@ -2096,9 +2140,10 @@ void MapDHandler::import_geo_table(const TSessionId& session,
   TRowDescriptor rd;
   if (cat.getMetadataForTable(table_name) == nullptr) {
     TDetectResult cds;
-    TCopyParams cp;
-    cp.table_type = TTableType::POLYGON;
-    detect_column_types(cds, session, file_name_in, cp);
+    // copy input CopyParams in order to retain S3 auth tokens
+    TCopyParams cp_copy = cp;
+    cp_copy.table_type = TTableType::POLYGON;
+    detect_column_types(cds, session, file_name_in, cp_copy);
     create_table(session, table_name, cds.row_set.row_desc, TTableType::POLYGON);
     rd = cds.row_set.row_desc;
   } else if (row_desc.size() > 0) {
@@ -2118,8 +2163,6 @@ void MapDHandler::import_geo_table(const TSessionId& session,
     THROW_MAPD_EXCEPTION("Table " + table_name + " does not exist.");
   }
   check_table_load_privileges(session_info, table_name);
-
-  Importer_NS::CopyParams copy_params = thrift_to_copyparams(cp);
 
   try {
     std::unique_ptr<Importer_NS::Importer> importer;

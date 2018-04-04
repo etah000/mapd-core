@@ -48,7 +48,11 @@ std::string SQLTypeInfo::type_name[kSQLTYPE_LAST] = {"NULL",
                                                      "DATE",
                                                      "ARRAY",
                                                      "INTERVAL_DAY_TIME",
-                                                     "INTERVAL_YEAR_MONTH"};
+                                                     "INTERVAL_YEAR_MONTH",
+                                                     "POINT",
+                                                     "LINESTRING",
+                                                     "POLYGON",
+                                                     "MULTIPOLYGON"};
 std::string SQLTypeInfo::comp_name[kENCODING_LAST] = {"NONE", "FIXED", "RL", "DIFF", "DICT", "SPARSE"};
 
 int64_t parse_numeric(const std::string& s, SQLTypeInfo& ti) {
@@ -236,6 +240,11 @@ Datum StringToDatum(const std::string& s, SQLTypeInfo& ti) {
       d.timeval = my_timegm(&tm_struct);
       break;
     }
+    case kPOINT:
+    case kLINESTRING:
+    case kPOLYGON:
+    case kMULTIPOLYGON:
+      throw std::runtime_error("Internal error: geometry type in StringToDatum.");
     default:
       throw std::runtime_error("Internal error: invalid type in StringToDatum.");
   }

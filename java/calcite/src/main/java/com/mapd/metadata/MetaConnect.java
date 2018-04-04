@@ -76,6 +76,12 @@ public class MetaConnect {
   private static final int KTEXT = 13;
   private static final int KDATE = 14;
   private static final int KARRAY = 15;
+  private static final int KINTERVAL_DAY_TIME = 16;
+  private static final int KINTERVAL_YEAR_MONTH = 17;
+  private static final int KPOINT = 18;
+  private static final int KLINESTRING = 19;
+  private static final int KPOLYGON = 20;
+  private static final int KMULTIPOLYGON = 21;
 
   private static volatile Map<String, Set<String>> MAPD_DATABASE_TO_TABLES
           = new ConcurrentHashMap();
@@ -517,6 +523,18 @@ public class MetaConnect {
         return TDatumType.TIMESTAMP;
       case KDATE:
         return TDatumType.DATE;
+      case KINTERVAL_DAY_TIME:
+        return TDatumType.INTERVAL_DAY_TIME;
+      case KINTERVAL_YEAR_MONTH:
+        return TDatumType.INTERVAL_YEAR_MONTH;
+      case KPOINT:
+        return TDatumType.POINT;
+      case KLINESTRING:
+        return TDatumType.LINESTRING;
+      case KPOLYGON:
+        return TDatumType.POLYGON;
+      case KMULTIPOLYGON:
+        return TDatumType.MULTIPOLYGON;
       default:
         return null;
     }

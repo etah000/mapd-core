@@ -112,6 +112,16 @@ class RelAlgTranslator {
 
   std::vector<std::shared_ptr<Analyzer::Expr>> translateFunctionArgs(const RexFunctionOperator*) const;
 
+  std::shared_ptr<Analyzer::Expr> translateUnaryGeoFunction(const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateBinaryGeoFunction(const RexFunctionOperator*) const;
+
+  std::vector<std::shared_ptr<Analyzer::Expr>> translateGeoFunctionArg(const RexScalar*, SQLTypeInfo&) const;
+
+  std::vector<std::shared_ptr<Analyzer::Expr>> translateGeoColumn(const RexInput*, SQLTypeInfo&) const;
+
+  std::vector<std::shared_ptr<Analyzer::Expr>> translateGeoLiteral(const RexLiteral*, SQLTypeInfo&) const;
+
   const Catalog_Namespace::Catalog& cat_;
   const Executor* executor_;
   const std::unordered_map<const RelAlgNode*, int> input_to_nest_level_;
