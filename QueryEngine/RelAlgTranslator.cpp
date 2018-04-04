@@ -346,6 +346,10 @@ std::shared_ptr<Analyzer::Expr> RelAlgTranslator::translateUoper(const RexOperat
       auto is_null = std::make_shared<Analyzer::UOper>(kBOOLEAN, kISNULL, operand_expr);
       return std::make_shared<Analyzer::UOper>(kBOOLEAN, kNOT, is_null);
     }
+    case kISNOTTRUE: {
+      auto is_true = std::make_shared<Analyzer::UOper>(kBOOLEAN, kISTRUE, operand_expr);
+      return std::make_shared<Analyzer::UOper>(kBOOLEAN, kNOT, is_true);
+    }
     case kMINUS: {
       const auto& ti = operand_expr->get_type_info();
       return std::make_shared<Analyzer::UOper>(ti, false, kUMINUS, operand_expr);

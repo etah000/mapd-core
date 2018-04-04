@@ -51,7 +51,8 @@ enum SQLOps {
   kUNNEST,
   kFUNCTION,
   kIN,
-  kISTRUE
+  kISTRUE,
+  kISNOTTRUE
 };
 
 #define IS_COMPARISON(X) \
