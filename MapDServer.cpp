@@ -303,7 +303,7 @@ int main(int argc, char** argv) {
                          po::value<bool>(&allow_multifrag)->default_value(allow_multifrag)->implicit_value(false),
                          "Disable execution over multiple fragments in a single round-trip to GPU");
   desc_adv.add_options()("allow-loop-joins",
-                         po::value<bool>(&allow_loop_joins)->default_value(allow_loop_joins)->implicit_value(true),
+                         po::value<bool>(&allow_loop_joins)->default_value(true)->implicit_value(true),
                          "Enable loop joins");
   desc_adv.add_options()("fast-strcmp",
                          po::value<bool>(&g_fast_strcmp)->default_value(g_fast_strcmp)->implicit_value(false),
