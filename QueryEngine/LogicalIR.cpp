@@ -365,8 +365,11 @@ llvm::Value* Executor::codegenLogical(const Analyzer::UOper* uoper, const Compil
   const auto operand = uoper->get_operand();
   const auto& operand_ti = operand->get_type_info();
   CHECK(operand_ti.is_boolean());
-  const auto operand_lv = codegen(operand, true, co).front();
+  auto operand_lv = codegen(operand, true, co).front();
   CHECK(operand_lv->getType()->isIntegerTy());
+  if (operand_lv->getType()->isIntegerTy(1)) {
+    operand_lv = castToTypeIn(operand_lv, 8);
+  }
   const bool not_null = (operand_ti.get_notnull() || is_qualified_bin_oper(operand));
   CHECK(not_null || operand_lv->getType()->isIntegerTy(8));
   return not_null ? cgen_state_->ir_builder_.CreateNot(toBool(operand_lv))
@@ -400,13 +403,12 @@ llvm::Value* Executor::codegenIsTrue(const Analyzer::UOper* uoper, const Compila
   if (dynamic_cast<const Analyzer::Constant*>(operand) &&
       dynamic_cast<const Analyzer::Constant*>(operand)->get_is_null()) {
     // for null constants, return false
-    return llvm::ConstantInt::getFalse(cgen_state_->context_);
+    return llvm::ConstantInt::get(get_int_type(1, cgen_state_->context_), 0);
   }
   const auto& ti = operand->get_type_info();
   CHECK(ti.is_boolean());
-  const auto operand_lv = codegen(operand, true, co).front();
-  
-  return cgen_state_->ir_builder_.CreateICmp(llvm::ICmpInst::ICMP_EQ, operand_lv, ll_bool(true));
+  const auto operand_lv = codegen(operand, true, co).front(); // bitwidth : 8  
+  return cgen_state_->ir_builder_.CreateICmp(llvm::ICmpInst::ICMP_EQ, castToTypeIn(operand_lv, 1), ll_bool(true));
 }
 
 llvm::Value* Executor::codegenIsNullNumber(llvm::Value* operand_lv, const SQLTypeInfo& ti) {
